@@ -72,7 +72,6 @@ export async function adminPage({ req, deps: app }: Ctx<App>): Promise<Response>
 <noscript><p class="notice">The admin page needs JavaScript.</p></noscript>`;
   return page(app, "Admin", body, {
     header: header(app, "admin"),
-    wide: true,
     scripts: ["admin.js"],
     meta: { "csrf-token": csrfToken(app, session) },
   });
