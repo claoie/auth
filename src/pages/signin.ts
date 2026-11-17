@@ -174,7 +174,7 @@ export async function postSecondFactor({ req, ip, deps: app }: Ctx<App>): Promis
 
 export async function passkeyOptions({ req, deps: app }: Ctx<App>): Promise<Response> {
   requireOrigin(app, req);
-  const { options, state } = await authenticationOptions(app);
+  const { options, state } = authenticationOptions(app);
   return json(200, { options }, {}, [setCookie(WEBAUTHN, state, 300)]);
 }
 
