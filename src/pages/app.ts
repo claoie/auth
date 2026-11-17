@@ -12,18 +12,31 @@ import { h, logo, messagePage, page } from "./layout";
 // same handlers apps use (docs/DESIGN.md §7.5).
 
 const ASSET_DIR = join(import.meta.dir, "..", "assets");
-const TYPES: Record<string, string> = { css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8" };
-// Read once at start: a fixed set, so no request path ever reaches the file system.
+const TYPES: Record<string, string> = {
+  css: "text/css; charset=utf-8",
+  js: "text/javascript; charset=utf-8",
+  svg: "image/svg+xml",
+  png: "image/png",
+  ico: "image/x-icon",
+};
+// Read once at start, as bytes: a fixed set, so no request path ever reaches
+// the file system.
 const ASSETS = new Map(
-  ["style.css", "signin.js", "account.js", "admin.js"].map((name) => [
+  ["style.css", "signin.js", "account.js", "admin.js", "icon.svg", "apple-touch-icon.png", "favicon.ico"].map((name) => [
     name,
-    { body: readFileSync(join(ASSET_DIR, name), "utf8"), type: TYPES[name.split(".").pop()!]! },
+    { body: new Uint8Array(readFileSync(join(ASSET_DIR, name))), type: TYPES[name.split(".").pop()!]! },
   ]),
 );
 
 export async function assetRoute({ params }: Ctx<App>): Promise<Response> {
   const found = ASSETS.get(params.file!);
   if (!found) return errorResponse(404, "not_found", "No such asset.");
+  return asset(found.body, found.type);
+}
+
+// Browsers ask for /favicon.ico on their own, for pages and JSON alike.
+export async function favicon(): Promise<Response> {
+  const found = ASSETS.get("favicon.ico")!;
   return asset(found.body, found.type);
 }
 
@@ -72,7 +85,6 @@ export async function adminPage({ req, deps: app }: Ctx<App>): Promise<Response>
 <noscript><p class="notice">The admin page needs JavaScript.</p></noscript>`;
   return page(app, "Admin", body, {
     header: header(app, "admin"),
-    wide: true,
     scripts: ["admin.js"],
     meta: { "csrf-token": csrfToken(app, session) },
   });

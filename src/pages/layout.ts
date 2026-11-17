@@ -47,7 +47,6 @@ export interface PageOptions {
   // The account and admin pages: a header bar and a wide frame. Every other
   // page is a narrow card under the logo.
   header?: string;
-  wide?: boolean;
 }
 
 export function page(app: App, title: string, body: string, opts: PageOptions = {}): Response {
@@ -59,7 +58,7 @@ export function page(app: App, title: string, body: string, opts: PageOptions = 
     opts.header !== undefined
       ? `<body class="app-frame">
 ${opts.header}
-<main class="app-main${opts.wide ? " wide" : ""}">
+<main class="app-main">
 ${body}
 </main>
 </body>`
@@ -77,6 +76,9 @@ ${body}
 <meta name="referrer" content="no-referrer">
 ${meta}
 <title>${h(title)}</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 <link rel="stylesheet" href="/assets/style.css">
 ${scripts}
 </head>

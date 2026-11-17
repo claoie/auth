@@ -31,7 +31,7 @@ export interface ResponseExtras {
   cookies?: string[];
 }
 
-function respond(status: number, body: string | null, contentType: string | null, extras: ResponseExtras = {}): Response {
+function respond(status: number, body: string | Uint8Array | null, contentType: string | null, extras: ResponseExtras = {}): Response {
   const headers = new Headers(SECURITY_HEADERS);
   if (contentType) headers.set("Content-Type", contentType);
   for (const [k, v] of Object.entries(extras.headers ?? {})) headers.set(k, v);
@@ -74,7 +74,7 @@ export function redirect(location: string, extras: ResponseExtras = {}, status =
   return respond(status, null, null, { ...extras, headers: { ...extras.headers, Location: location } });
 }
 
-export function asset(body: string, contentType: string): Response {
+export function asset(body: string | Uint8Array, contentType: string): Response {
   return respond(200, body, contentType, { headers: { "Cache-Control": "public, max-age=300" } });
 }
 
