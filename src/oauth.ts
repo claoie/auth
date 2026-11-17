@@ -10,7 +10,7 @@ import { emitSessionEnded } from "./events";
 import { errorResponse, HttpError, json, readForm, redirect, single } from "./http";
 import { signJwt, verifyJwt } from "./jwt";
 import { parseIp, formatIp } from "./net";
-import { h, messagePage, page } from "./pages/layout";
+import { messagePage } from "./pages/layout";
 import type { Ctx } from "./server";
 import type { Client, Service } from "./services";
 import { clearSessionCookie, endFamily, endSession, hasMfa, loadSession, lockFamily, touch } from "./sessions";
@@ -501,5 +501,5 @@ export async function logout({ req, url, ip, deps: app }: Ctx<App>): Promise<Res
     if (state !== null && state.length <= 1024) back.searchParams.append("state", state);
     return redirect(back.toString(), extras, 302);
   }
-  return page(app, "Signed out", `<h1>Signed out</h1>\n<p>You are signed out.</p>\n<p><a href="/login">${h("Sign in again")}</a></p>`, { extras });
+  return messagePage(app, 200, "Signed out", "You are signed out.", { href: "/login", text: "Sign in again" }, extras);
 }

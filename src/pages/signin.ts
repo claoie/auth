@@ -10,7 +10,7 @@ import { loadSession, requireOrigin, sessionCookie, signInSession } from "../ses
 import { clear, failureWait, hit, recordFailure, tooMany } from "../throttle";
 import { transaction } from "../tx";
 import { findUser, findUserByLogin } from "../users";
-import { checkForm, extrasWith, formToken, h, hiddenCsrf, localPath, messagePage, page } from "./layout";
+import { checkForm, extrasWith, flash, formToken, h, hiddenCsrf, icon, localPath, messagePage, page } from "./layout";
 
 // Signing in (docs/DESIGN.md §7.1, §9.1, §9.4): a password, then TOTP or a
 // recovery code when the account has TOTP; or a passkey, which is two
@@ -44,21 +44,24 @@ function loginForm(app: App, req: Request, opts: { returnTo: string; login?: str
   const { token, cookie } = formToken(req);
   const body = `
 <h1>Sign in</h1>
-${opts.notice ? `<p class="notice">${h(opts.notice)}</p>` : ""}
-${opts.error ? `<p class="error" role="alert">${h(opts.error)}</p>` : ""}
-<form method="post" action="/login">
+${opts.notice ? flash("notice", opts.notice) : ""}
+${opts.error ? flash("error", opts.error) : ""}
+<form method="post" action="/login" class="card">
   ${hiddenCsrf(token)}
   <input type="hidden" name="return_to" value="${h(opts.returnTo)}">
   <label>Username or email <input name="login" autocomplete="username webauthn" required maxlength="254" value="${h(opts.login ?? "")}"></label>
-  <label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
-  <button type="submit">Sign in</button>
+  <div class="field">
+    <div class="field-head"><label for="login-password">Password</label><a href="/reset">Forgot password?</a></div>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+  </div>
+  <button type="submit" class="block">Sign in</button>
 </form>
 <div class="passkey" hidden>
-  <p>or</p>
-  <button type="button" id="passkey-signin" data-return-to="${h(opts.returnTo)}">Sign in with a passkey</button>
+  <p class="divider">or</p>
+  <button type="button" class="secondary block" id="passkey-signin" data-return-to="${h(opts.returnTo)}">${icon("passkey")}Sign in with a passkey</button>
   <p class="error" id="passkey-error" role="alert" hidden></p>
 </div>
-<p class="links"><a href="/reset">Forgot your password?</a>${app.services.anyOpen() ? ` · <a href="/signup?${new URLSearchParams({ return_to: opts.returnTo })}">Create an account</a>` : ""}</p>`;
+${app.services.anyOpen() ? `<p class="callout">New here? <a href="/signup?${new URLSearchParams({ return_to: opts.returnTo })}">Create an account</a></p>` : ""}`;
   return page(app, "Sign in", body, { status: opts.status, scripts: ["signin.js"], extras: extrasWith(cookie) });
 }
 
@@ -132,12 +135,13 @@ function secondFactorForm(app: App, req: Request, error?: string, status = 200):
   const { token, cookie } = formToken(req);
   const body = `
 <h1>Second factor</h1>
-${error ? `<p class="error" role="alert">${h(error)}</p>` : ""}
-<form method="post" action="/login/second-factor">
+${error ? flash("error", error) : ""}
+<form method="post" action="/login/second-factor" class="card">
   ${hiddenCsrf(token)}
-  <label>The 6-digit code from your authenticator app, or a recovery code
+  <label>Authentication code
     <input name="code" autocomplete="one-time-code" inputmode="text" required maxlength="40" autofocus></label>
-  <button type="submit">Continue</button>
+  <p class="hint">The 6-digit code from your authenticator app, or a recovery code.</p>
+  <button type="submit" class="block">Continue</button>
 </form>
 <p class="links"><a href="/login">Start over</a></p>`;
   return page(app, "Second factor", body, { status, extras: extrasWith(cookie) });

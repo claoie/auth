@@ -82,10 +82,26 @@
     return assertionJSON(cred);
   }
 
+  // An alert icon, as the server draws it beside its own messages.
+  function alertIcon() {
+    var ns = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(ns, "svg");
+    var attrs = { class: "icon", width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false" };
+    Object.keys(attrs).forEach(function (k) {
+      svg.setAttribute(k, attrs[k]);
+    });
+    var path = document.createElementNS(ns, "path");
+    path.setAttribute("d", "M8 2.25 1.75 13.25h12.5L8 2.25ZM8 6.5v3M8 11.25v.25");
+    svg.append(path);
+    return svg;
+  }
+
   function showError(el, err) {
     if (!el) return;
     var msg = err && err.name === "NotAllowedError" ? "The passkey prompt was cancelled or timed out." : (err && err.message) || "That didn't work.";
-    el.textContent = msg;
+    var text = document.createElement("span");
+    text.textContent = msg;
+    el.replaceChildren(alertIcon(), text);
     el.hidden = false;
   }
 
