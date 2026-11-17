@@ -48,23 +48,40 @@ it.
    (the namespace is the account the CD secrets below name), and records the
    image digest in the run's summary.
 3. When the repository has a `DEPLOY_URL` secret, CD then POSTs
-   `{"sha", "repo"}` to it with `Authorization: Bearer <DEPLOY_SECRET>` and
-   waits for the answer. A refused or cut connection, 409, 502 and 504 are
-   retried a minute apart, up to 10 tries; any other answer than 2xx fails
-   the run. Only the status is printed, never the URL or the response.
-   Without `DEPLOY_URL`, CD stops after publishing.
+   `{"sha", "digest", "repo"}` to it, `digest` being the image it just
+   pushed, with `Authorization: Bearer <DEPLOY_SECRET>`, and waits for the
+   answer. A refused or cut connection, 409, 502 and 504 are retried a
+   minute apart, up to 10 tries; any other answer than 2xx fails the run.
+   Only the status is printed, never the URL or the response. Without
+   `DEPLOY_URL`, CD stops after publishing.
+
+**The deploy hook.** What CD expects of the endpoint behind `DEPLOY_URL`:
+
+- It deploys `<namespace>/auth@<digest>`, the image this run built. A hook
+  that pulls `latest` instead runs whatever the tag holds when it pulls, so
+  anyone who can push to the namespace can put an image there; for that
+  deployment, the Docker Hub credential is as sensitive as the right to
+  merge here.
+- It answers when the deploy has ended: 2xx only if it succeeded, any
+  other status if it failed.
+- It answers 409 while another deploy is in flight.
+- It finishes or gives up within 660 seconds, when CD stops waiting and
+  fails the run without retrying.
+- A repeated POST with the same digest is safe to deploy again: CD retries
+  after a refused or cut connection, 502 and 504, any of which can follow a
+  POST the hook already acted on.
 
 A deployment chooses how releases reach it (`docs/DESIGN.md` §11):
 
-- **Following `latest`**, with a hook behind `DEPLOY_URL` that pulls the
-  image and replaces its copies: every release that passes CI goes live
-  minutes after its merge, so a merge here is a deploy, and this
+- **Following releases**, with a hook behind `DEPLOY_URL` that deploys
+  the posted digest and replaces its copies: every release that passes CI
+  goes live minutes after its merge, so a merge here is a deploy, and this
   repository's review rules (§4) are what stand between a change and it.
 - **Pinned by digest**: the deployment pulls the image it chooses and
   upgrades by moving the pin in its own configuration, where it reviews the
   change. A push to this repository can't reach it on its own.
 
-**Rolling back.** Following `latest`, revert the change here, which
+**Rolling back.** Following releases, revert the change here, which
 releases and deploys the code before it, or pin the previous digest until a
 fix lands. Pinned, move the pin back. Migrations are expand-only, so the
 previous image runs against the newer schema either way.
