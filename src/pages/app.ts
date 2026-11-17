@@ -6,7 +6,7 @@ import { asset, errorResponse, redirect } from "../http";
 import type { Ctx } from "../server";
 import { AUTH_SERVICE } from "../services";
 import { csrfToken, hasMfa, loadSession } from "../sessions";
-import { messagePage, page } from "./layout";
+import { h, logo, messagePage, page } from "./layout";
 
 // The account and admin pages: a shell whose script calls the /v1 API, the
 // same handlers apps use (docs/DESIGN.md §7.5).
@@ -31,15 +31,31 @@ export async function home(): Promise<Response> {
   return redirect("/account", {}, 302);
 }
 
+// The bar above the account and admin pages. The account page shows its
+// Admin link once its script knows the user is an admin.
+function header(app: App, current: "account" | "admin"): string {
+  const here = (name: string) => (name === current ? ' aria-current="page"' : "");
+  return `<header class="app-header">
+<a class="app-brand" href="/account">${logo(28)}<span>${h(app.config.issuer.replace(/^https?:\/\//, ""))}</span></a>
+<nav class="app-nav" aria-label="Main">
+<a href="/account"${here("account")}>Account</a>
+<a href="/admin" id="admin-link"${here("admin")}${current === "admin" ? "" : " hidden"}>Admin</a>
+<a href="/logout">Sign out</a>
+</nav>
+</header>`;
+}
+
 export async function accountPage({ req, deps: app }: Ctx<App>): Promise<Response> {
   const session = await loadSession(app, req);
   if (!session) return redirect(`/login?${new URLSearchParams({ return_to: "/account" })}`, {}, 302);
   const body = `
-<header class="bar"><strong>${app.config.issuer.replace(/^https?:\/\//, "")}</strong>
-<nav><a href="/account">Account</a> <a href="/admin" id="admin-link" hidden>Admin</a> <a href="/logout">Sign out</a></nav></header>
-<div id="app"><p>Loading…</p></div>
-<noscript><p>The account page needs JavaScript.</p></noscript>`;
-  return page(app, "Your account", body, { scripts: ["account.js"], meta: { "csrf-token": csrfToken(app, session) } });
+<div id="app"><p class="loading">Loading…</p></div>
+<noscript><p class="notice">The account page needs JavaScript.</p></noscript>`;
+  return page(app, "Your account", body, {
+    header: header(app, "account"),
+    scripts: ["account.js"],
+    meta: { "csrf-token": csrfToken(app, session) },
+  });
 }
 
 export async function adminPage({ req, deps: app }: Ctx<App>): Promise<Response> {
@@ -52,9 +68,12 @@ export async function adminPage({ req, deps: app }: Ctx<App>): Promise<Response>
     return redirect(`/login?${new URLSearchParams({ return_to: "/admin", second_factor: AUTH_SERVICE })}`, {}, 302);
   }
   const body = `
-<header class="bar"><strong>${app.config.issuer.replace(/^https?:\/\//, "")} admin</strong>
-<nav><a href="/account">Account</a> <a href="/admin">Admin</a> <a href="/logout">Sign out</a></nav></header>
-<div id="app"><p>Loading…</p></div>
-<noscript><p>The admin page needs JavaScript.</p></noscript>`;
-  return page(app, "Admin", body, { scripts: ["admin.js"], meta: { "csrf-token": csrfToken(app, session) } });
+<div id="app"><p class="loading">Loading…</p></div>
+<noscript><p class="notice">The admin page needs JavaScript.</p></noscript>`;
+  return page(app, "Admin", body, {
+    header: header(app, "admin"),
+    wide: true,
+    scripts: ["admin.js"],
+    meta: { "csrf-token": csrfToken(app, session) },
+  });
 }

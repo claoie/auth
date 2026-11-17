@@ -14,11 +14,40 @@ export function h(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
+// Icons are inline SVG: the CSP loads no images. 16×16, drawn with the text
+// color.
+const ICONS: Record<string, string> = {
+  info: '<circle cx="8" cy="8" r="6.25"/><path d="M8 7.25v3.5M8 5v.25"/>',
+  alert: '<path d="M8 2.25 1.75 13.25h12.5L8 2.25ZM8 6.5v3M8 11.25v.25"/>',
+  check: '<circle cx="8" cy="8" r="6.25"/><path d="m5.5 8.25 1.75 1.75 3.25-3.5"/>',
+  passkey: '<circle cx="6" cy="5" r="2.5"/><path d="M1.75 13.25c.4-2.4 2.1-3.75 4.25-3.75.8 0 1.5.2 2.1.5"/><circle cx="12" cy="8.25" r="1.75"/><path d="M12 10v3.75M12 12.25h1.25"/>',
+};
+
+export function icon(name: string, size = 16): string {
+  return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICONS[name] ?? ""}</svg>`;
+}
+
+// A keyhole: the mark above the sign-in pages and in the account header.
+export function logo(size: number): string {
+  return `<svg class="logo" width="${size}" height="${size}" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="logo-bg" width="32" height="32" rx="8" fill="#0969da"/><circle class="logo-fg" cx="16" cy="13" r="4.5" fill="#fff"/><path class="logo-fg" d="M13.6 15.5h4.8l1.35 8.5h-7.5z" fill="#fff"/></svg>`;
+}
+
+// A message box. An error is announced as an alert, the others as a status.
+export function flash(kind: "notice" | "success" | "error", message: string): string {
+  const role = kind === "error" ? ' role="alert"' : ' role="status"';
+  const glyph = kind === "success" ? "check" : kind === "notice" ? "info" : "alert";
+  return `<p class="${kind}"${role}>${icon(glyph)}<span>${h(message)}</span></p>`;
+}
+
 export interface PageOptions {
   status?: number;
   scripts?: string[];
   meta?: Record<string, string>;
   extras?: ResponseExtras;
+  // The account and admin pages: a header bar and a wide frame. Every other
+  // page is a narrow card under the logo.
+  header?: string;
+  wide?: boolean;
 }
 
 export function page(app: App, title: string, body: string, opts: PageOptions = {}): Response {
@@ -26,6 +55,20 @@ export function page(app: App, title: string, body: string, opts: PageOptions = 
     .map(([k, v]) => `<meta name="${h(k)}" content="${h(v)}">`)
     .join("\n");
   const scripts = (opts.scripts ?? []).map((s) => `<script src="/assets/${h(s)}" defer></script>`).join("\n");
+  const frame =
+    opts.header !== undefined
+      ? `<body class="app-frame">
+${opts.header}
+<main class="app-main${opts.wide ? " wide" : ""}">
+${body}
+</main>
+</body>`
+      : `<body class="card-frame">
+<main class="card-main">
+<div class="brand-mark">${logo(48)}</div>
+${body}
+</main>
+</body>`;
   const doc = `<!doctype html>
 <html lang="en">
 <head>
@@ -37,18 +80,28 @@ ${meta}
 <link rel="stylesheet" href="/assets/style.css">
 ${scripts}
 </head>
-<body>
-<main>
-${body}
-</main>
-</body>
+${frame}
 </html>`;
   return html(opts.status ?? 200, doc, pageCsp(app.services.formActionSources()), opts.extras);
 }
 
-export function messagePage(app: App, status: number, title: string, message: string, link?: { href: string; text: string }): Response {
-  const a = link ? `<p><a href="${h(link.href)}">${h(link.text)}</a></p>` : "";
-  return page(app, title, `<h1>${h(title)}</h1>\n<p>${h(message)}</p>\n${a}`, { status });
+export function messagePage(
+  app: App,
+  status: number,
+  title: string,
+  message: string,
+  link?: { href: string; text: string },
+  extras?: ResponseExtras,
+): Response {
+  const ok = status < 400;
+  const a = link ? `<a class="button block${ok ? "" : " secondary"}" href="${h(link.href)}">${h(link.text)}</a>` : "";
+  const body = `<h1>${h(title)}</h1>
+<div class="card">
+<div class="status-icon${ok ? "" : " warn"}">${icon(ok ? "check" : "alert", 24)}</div>
+<p>${h(message)}</p>
+${a}
+</div>`;
+  return page(app, title, body, { status, extras });
 }
 
 // Forms posted before or without a session carry a double-submit token: a

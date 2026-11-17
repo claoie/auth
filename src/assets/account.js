@@ -46,7 +46,116 @@
   function when(iso) {
     if (!iso) return "never";
     var d = new Date(iso);
-    return isNaN(d.getTime()) ? iso : d.toLocaleString();
+    if (isNaN(d.getTime())) return iso;
+    try {
+      return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    } catch (e) {
+      return d.toLocaleString();
+    }
+  }
+
+  // Inline SVG, 16×16 in the text color: the CSP loads no images.
+  var SVG = "http://www.w3.org/2000/svg";
+  var ICONS = {
+    info: [["circle", { cx: 8, cy: 8, r: 6.25 }], ["path", { d: "M8 7.25v3.5M8 5v.25" }]],
+    alert: [["path", { d: "M8 2.25 1.75 13.25h12.5L8 2.25ZM8 6.5v3M8 11.25v.25" }]],
+    check: [["circle", { cx: 8, cy: 8, r: 6.25 }], ["path", { d: "m5.5 8.25 1.75 1.75 3.25-3.5" }]],
+    done: [["path", { d: "m3 8.5 3.25 3.25L13 5" }]],
+    person: [["circle", { cx: 8, cy: 5.25, r: 2.75 }], ["path", { d: "M2.75 14c.55-2.85 2.6-4.5 5.25-4.5s4.7 1.65 5.25 4.5" }]],
+    shield: [["path", { d: "M8 1.75 2.75 3.5v4.25c0 3.1 2.15 5.4 5.25 6.5 3.1-1.1 5.25-3.4 5.25-6.5V3.5L8 1.75Z" }]],
+    monitor: [["rect", { x: 1.75, y: 2.5, width: 12.5, height: 8.5, rx: 1.25 }], ["path", { d: "M5.75 13.75h4.5M8 11v2.75" }]],
+    phone: [["rect", { x: 4.25, y: 1.75, width: 7.5, height: 12.5, rx: 1.5 }], ["path", { d: "M7.25 11.75h1.5" }]],
+    apps: [
+      ["rect", { x: 2, y: 2, width: 5, height: 5, rx: 1.25 }],
+      ["rect", { x: 9, y: 2, width: 5, height: 5, rx: 1.25 }],
+      ["rect", { x: 2, y: 9, width: 5, height: 5, rx: 1.25 }],
+      ["rect", { x: 9, y: 9, width: 5, height: 5, rx: 1.25 }],
+    ],
+    lock: [["rect", { x: 2.75, y: 7, width: 10.5, height: 7.25, rx: 1.5 }], ["path", { d: "M5.25 7V5.25a2.75 2.75 0 0 1 5.5 0V7" }]],
+    key: [["circle", { cx: 5, cy: 11, r: 2.75 }], ["path", { d: "m7 9 6.25-6.25M11 4.75l1.75 1.75M9.5 6.25l1.25 1.25" }]],
+    passkey: [
+      ["circle", { cx: 6, cy: 5, r: 2.5 }],
+      ["path", { d: "M1.75 13.25c.4-2.4 2.1-3.75 4.25-3.75.8 0 1.5.2 2.1.5" }],
+      ["circle", { cx: 12, cy: 8.25, r: 1.75 }],
+      ["path", { d: "M12 10v3.75M12 12.25h1.25" }],
+    ],
+    copy: [
+      ["rect", { x: 5.25, y: 5.25, width: 9, height: 9, rx: 1.5 }],
+      ["path", { d: "M10.75 5.25v-2c0-.8-.7-1.5-1.5-1.5h-6c-.8 0-1.5.7-1.5 1.5v6c0 .8.7 1.5 1.5 1.5h2" }],
+    ],
+  };
+
+  function icon(name, size) {
+    var svg = document.createElementNS(SVG, "svg");
+    var s = String(size || 16);
+    var attrs = {
+      class: "icon",
+      width: s,
+      height: s,
+      viewBox: "0 0 16 16",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "1.5",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+      focusable: "false",
+    };
+    Object.keys(attrs).forEach(function (k) {
+      svg.setAttribute(k, attrs[k]);
+    });
+    (ICONS[name] || []).forEach(function (shape) {
+      var n = document.createElementNS(SVG, shape[0]);
+      Object.keys(shape[1]).forEach(function (k) {
+        n.setAttribute(k, String(shape[1][k]));
+      });
+      svg.append(n);
+    });
+    return svg;
+  }
+
+  function tag(text, kind) {
+    return el("span", { class: kind ? "tag " + kind : "tag" }, text);
+  }
+
+  function initials(name, username) {
+    var words = (name || "").trim().split(/\s+/).filter(Boolean);
+    var first = function (w) {
+      return Array.from(w)[0] || "";
+    };
+    var s = words.length ? first(words[0]) + (words.length > 1 ? first(words[words.length - 1]) : "") : first(username || "?");
+    return s.toUpperCase();
+  }
+
+  // "Chrome on macOS" from a user agent; the full string stays in the tooltip.
+  function deviceName(ua) {
+    if (!ua) return "Unknown browser";
+    var browser = /Edg(e|A|iOS)?\//.test(ua)
+      ? "Edge"
+      : /OPR\//.test(ua)
+        ? "Opera"
+        : /(Firefox|FxiOS)\//.test(ua)
+          ? "Firefox"
+          : /(Chrome|CriOS)\//.test(ua)
+            ? "Chrome"
+            : /Safari\//.test(ua)
+              ? "Safari"
+              : null;
+    var os = /iPhone|iPad|iPod/.test(ua)
+      ? "iOS"
+      : /Android/.test(ua)
+        ? "Android"
+        : /CrOS/.test(ua)
+          ? "ChromeOS"
+          : /Windows/.test(ua)
+            ? "Windows"
+            : /Mac OS X|Macintosh/.test(ua)
+              ? "macOS"
+              : /Linux/.test(ua)
+                ? "Linux"
+                : null;
+    if (!browser && !os) return ua.length > 60 ? ua.slice(0, 60) + "…" : ua;
+    return (browser || "Browser") + (os ? " on " + os : "");
   }
 
   function ApiError(status, code, description) {
@@ -110,13 +219,20 @@
     }
   }
 
+  // A message box: "success", "notice" or "error".
+  function flash(kind, message) {
+    var glyph = kind === "success" ? "check" : kind === "notice" ? "info" : "alert";
+    return el("p", { class: kind, role: kind === "error" ? "alert" : "status" }, icon(glyph), el("span", {}, message));
+  }
+
   function status() {
     return el("p", { class: "error", role: "alert", hidden: true });
   }
 
   function say(node, message, kind) {
-    node.className = kind === "ok" ? "notice" : "error";
-    node.textContent = message;
+    node.className = kind === "ok" ? "success" : "error";
+    clear(node);
+    if (message) node.append(icon(kind === "ok" ? "check" : "alert"), el("span", {}, message));
     node.hidden = !message;
   }
 
@@ -136,24 +252,25 @@
     }
   }
 
-  function secretBox(title, value, note) {
-    var copy = el("button", { type: "button", class: "secondary" }, "Copy");
+  function secretBox(title, value, note, codes) {
+    var copy = el("button", { type: "button", class: "secondary sm" }, icon("copy"), "Copy");
     copy.addEventListener("click", async function () {
+      clear(copy);
       try {
         await navigator.clipboard.writeText(value);
-        copy.textContent = "Copied";
+        copy.append(icon("done"), "Copied");
       } catch (e) {
-        copy.textContent = "Select the text and copy it";
+        copy.append("Select the text and copy it");
       }
     });
     var box = el(
       "div",
       { class: "secret", role: "status" },
-      el("strong", {}, title),
+      el("strong", {}, icon("key"), title),
       el("p", { class: "hint" }, note || "Shown only now. Copy it somewhere safe before you leave this page."),
-      el("pre", {}, value),
+      el("pre", { class: codes ? "codes" : null }, value),
     );
-    var done = el("button", { type: "button", class: "secondary" }, "Done");
+    var done = el("button", { type: "button", class: "secondary sm" }, "Done");
     done.addEventListener("click", function () {
       box.remove();
     });
@@ -161,16 +278,94 @@
     return box;
   }
 
-  function section(id, title) {
-    var s = el("section", { id: id, "aria-labelledby": id + "-title" }, el("h2", { id: id + "-title" }, title));
-    root.append(s);
+  // A list row: an icon, a title with tags, a line of detail, and actions.
+  function row(opts) {
+    var lead = el(
+      "div",
+      { class: "row-lead" },
+      opts.icon ? el("span", { class: "row-icon" }, icon(opts.icon)) : null,
+      el(
+        "div",
+        { class: "row-main" },
+        el("div", { class: "row-title", title: opts.tooltip || null }, el("span", {}, opts.title), opts.tags || null),
+        opts.extra || null,
+        opts.detail ? el("p", { class: "hint" }, opts.detail) : null,
+      ),
+    );
+    return el("li", {}, lead, opts.action || null);
+  }
+
+  function blank(text) {
+    return el("li", { class: "blank" }, text);
+  }
+
+  // ---------------------------------------------------- page and panes
+
+  var PANES = [
+    ["profile", "Profile", "person"],
+    ["security", "Password and authentication", "shield"],
+    ["devices", "Devices", "monitor"],
+    ["access", "Services", "apps"],
+    ["app-passwords", "App passwords", "lock"],
+    ["api-keys", "API keys", "key"],
+  ];
+  var panes = null;
+
+  // Ids inside a pane, such as #delete, open the pane that holds them.
+  function paneFor(id) {
+    var target = id ? document.getElementById(id) : null;
+    var pane = target ? target.closest("section.pane") : null;
+    return pane ? pane.id : "profile";
+  }
+
+  function showPane() {
+    var current = paneFor(location.hash.slice(1));
+    Array.prototype.forEach.call(root.querySelectorAll("section.pane"), function (s) {
+      s.hidden = s.id !== current;
+    });
+    Array.prototype.forEach.call(root.querySelectorAll(".side-nav a"), function (a) {
+      if (a.getAttribute("href") === "#" + current) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+  }
+
+  window.addEventListener("hashchange", function () {
+    if (!me) return;
+    showPane();
+    var target = location.hash ? document.getElementById(location.hash.slice(1)) : null;
+    if (target && !target.classList.contains("pane")) target.scrollIntoView();
+    else window.scrollTo(0, 0);
+  });
+
+  function section(id, title, lede) {
+    var s = el(
+      "section",
+      { class: "pane", id: id, "aria-labelledby": id + "-title" },
+      el("h2", { id: id + "-title" }, title),
+      lede ? el("p", { class: "lede" }, lede) : null,
+    );
+    panes.append(s);
     return s;
   }
 
   function slot(parent) {
-    var d = el("div");
+    var d = el("div", { class: "stack" });
     parent.append(d);
     return d;
+  }
+
+  function pageHead() {
+    return el(
+      "div",
+      { class: "page-head" },
+      el("span", { class: "avatar lg", "aria-hidden": "true" }, initials(me.name, me.username)),
+      el(
+        "div",
+        {},
+        el("h1", {}, me.name || me.username, me.name ? el("span", { class: "muted" }, " (" + me.username + ")") : null),
+        el("p", {}, "Your personal account"),
+      ),
+    );
   }
 
   // ----------------------------------------------------------- WebAuthn
@@ -240,7 +435,7 @@
     var form = el(
       "form",
       {},
-      el("p", { class: "muted" }, "Username: ", el("strong", {}, me.username), " (it never changes)"),
+      el("div", { class: "field-static" }, el("span", {}, "Username"), el("span", {}, el("code", {}, me.username), el("span", { class: "hint" }, " · it never changes"))),
       el("label", {}, "Name", name),
       el("label", {}, "Recovery email", email),
       me.email && !me.email_verified ? el("p", { class: "hint" }, "This address isn't confirmed yet.") : null,
@@ -271,8 +466,17 @@
     var current = el("input", { type: "password", autocomplete: "current-password", maxlength: "1024" });
     var next = el("input", { type: "password", autocomplete: "new-password", required: true, minlength: "12", maxlength: "256" });
     var hidden = el("input", { type: "text", autocomplete: "username", value: me.username, hidden: true, readonly: true });
-    var save = el("button", { type: "submit" }, "Change password");
-    var form = el("form", {}, hidden, el("label", {}, "Current password", current), el("label", {}, "New password (12 or more characters)", next), save, out);
+    var save = el("button", { type: "submit", class: "secondary" }, "Change password");
+    var form = el(
+      "form",
+      { class: "narrow" },
+      hidden,
+      el("label", {}, "Current password", current),
+      el("label", {}, "New password", next),
+      el("p", { class: "hint" }, "At least 12 characters. Your other devices are signed out."),
+      save,
+      out,
+    );
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
       act(save, out, async function () {
@@ -282,16 +486,26 @@
         say(out, "Password changed. Your other devices were signed out.", "ok");
       });
     });
-    s.append(el("h3", {}, "Password"), form);
+    s.append(el("h3", {}, "Change password"), form);
   }
 
-  function renderTotp(s) {
-    var box = slot(s);
+  function renderTotp(box) {
+    var line = el("div", { class: "box-row" });
+    box.append(line);
     var out = status();
-    s.append(out);
-    box.append(el("h3", {}, "Authenticator app"));
+    var main = el(
+      "div",
+      { class: "row-lead" },
+      el("span", { class: "row-icon" }, icon("phone")),
+      el(
+        "div",
+        { class: "row-main" },
+        el("div", { class: "row-title" }, el("span", {}, "Authenticator app"), me.mfa.totp ? tag("Configured", "ok") : null),
+        el("p", { class: "hint" }, "A 6-digit code from an app on your phone, asked for at each password sign-in."),
+      ),
+    );
     if (me.mfa.totp) {
-      var remove = el("button", { type: "button", class: "danger" }, "Remove authenticator app");
+      var remove = el("button", { type: "button", class: "danger sm" }, "Remove");
       remove.addEventListener("click", function () {
         if (!confirm("Remove the authenticator app? Services that need a second factor will ask you to set one up again.")) return;
         act(remove, out, async function () {
@@ -299,29 +513,34 @@
           await reload();
         });
       });
-      box.append(el("p", { class: "ok" }, "Set up."), remove);
+      line.append(main, remove, out);
       return;
     }
-    var start = el("button", { type: "button" }, "Set up an authenticator app");
-    box.append(el("p", { class: "muted" }, "Not set up."), start);
+    var start = el("button", { type: "button", class: "sm" }, "Set up");
+    line.append(main, start, out);
     start.addEventListener("click", function () {
       act(start, out, async function () {
         var e = await api("POST", "/v1/me/totp", {});
         start.hidden = true;
         var code = el("input", { inputmode: "numeric", autocomplete: "one-time-code", pattern: "[0-9]{6}", maxlength: "6", required: true });
         var confirmBtn = el("button", { type: "submit" }, "Confirm");
-        var form = el("form", {}, el("label", {}, "The 6-digit code your app shows", code), confirmBtn);
+        var form = el("form", { class: "inline" }, el("label", {}, "The 6-digit code your app shows", code), confirmBtn);
         var link = el("a", { href: e.otpauth_uri }, "Open in an authenticator app");
-        box.append(
+        line.insertBefore(
           el(
             "div",
-            { class: "secret", role: "status" },
-            el("strong", {}, "Add this account to your authenticator app"),
-            el("p", { class: "hint" }, "Enter this key in the app, or open the link on the device that has it. Shown only now."),
-            el("pre", {}, e.secret),
-            el("p", {}, link),
+            { class: "row-detail" },
+            el(
+              "div",
+              { class: "secret", role: "status" },
+              el("strong", {}, icon("key"), "Add this account to your authenticator app"),
+              el("p", { class: "hint" }, "Enter this key in the app, or open the link on the device that has it. Shown only now."),
+              el("pre", {}, e.secret),
+              el("p", {}, link),
+            ),
+            form,
           ),
-          form,
+          out,
         );
         code.focus();
         form.addEventListener("submit", function (ev) {
@@ -332,11 +551,16 @@
             me = await api("GET", "/v1/me");
             await render();
             var sec = document.getElementById("security");
-            var msg = el("p", { class: "notice", role: "status" }, "Authenticator app set up.");
+            var msg = flash("success", "Authenticator app set up.");
             sec.insertBefore(msg, sec.children[1] || null);
             if (done && done.recovery_codes) {
               sec.insertBefore(
-                secretBox("Your recovery codes", done.recovery_codes.join("\n"), "Each works once, in place of a code from your app. Shown only now: keep them somewhere safe."),
+                secretBox(
+                  "Your recovery codes",
+                  done.recovery_codes.join("\n"),
+                  "Each works once, in place of a code from your app. Shown only now: keep them somewhere safe.",
+                  true,
+                ),
                 msg.nextSibling,
               );
             }
@@ -346,44 +570,61 @@
     });
   }
 
-  function renderRecovery(s) {
+  function renderRecovery(box) {
+    var line = el("div", { class: "box-row" });
+    box.append(line);
     var out = status();
-    var regen = el("button", { type: "button", class: "secondary" }, me.mfa.recovery_codes ? "Make new recovery codes" : "Make recovery codes");
-    var holder = slot(s);
+    var regen = el("button", { type: "button", class: "secondary sm" }, me.mfa.recovery_codes ? "Make new recovery codes" : "Make recovery codes");
+    var holder = el("div", { class: "row-detail" });
     regen.addEventListener("click", function () {
       if (me.mfa.recovery_codes && !confirm("Make new recovery codes? The ones you have stop working.")) return;
       act(regen, out, async function () {
         var r = await api("POST", "/v1/me/recovery-codes", {});
         me.mfa.recovery_codes = r.codes.length;
         clear(holder);
-        holder.append(secretBox("Your recovery codes", r.codes.join("\n"), "Each works once. Shown only now: keep them somewhere safe."));
+        holder.append(secretBox("Your recovery codes", r.codes.join("\n"), "Each works once. Shown only now: keep them somewhere safe.", true));
       });
     });
-    s.append(
-      el("h3", {}, "Recovery codes"),
-      el("p", { class: "muted" }, me.mfa.recovery_codes + " unused code" + (me.mfa.recovery_codes === 1 ? "" : "s") + " left."),
+    var left = me.mfa.recovery_codes + " unused code" + (me.mfa.recovery_codes === 1 ? "" : "s") + " left.";
+    line.append(
+      el(
+        "div",
+        { class: "row-lead" },
+        el("span", { class: "row-icon" }, icon("key")),
+        el(
+          "div",
+          { class: "row-main" },
+          el("div", { class: "row-title" }, el("span", {}, "Recovery codes")),
+          el("p", { class: "hint" }, left + " Each works once, when you can't use your phone or passkey."),
+        ),
+      ),
       regen,
+      holder,
       out,
     );
-    s.append(holder);
   }
 
   async function renderPasskeys(s) {
     var out = status();
     var list = el("ul", { class: "rows" });
-    s.append(el("h3", {}, "Passkeys"), list);
     var supported = typeof window.PublicKeyCredential === "function" && navigator.credentials;
     var name = el("input", { maxlength: "100", placeholder: "e.g. Laptop", value: "" });
-    var add = el("button", { type: "submit" }, "Add a passkey");
+    var add = el("button", { type: "submit", class: "secondary" }, "Add a passkey");
     var form = el("form", { class: "inline" }, el("label", {}, "Name", name), add);
-    if (!supported) form.hidden = true;
-    s.append(form, out);
+    var footer = el("div", { class: "box-footer" }, form);
+    if (!supported) footer.hidden = true;
+    s.append(
+      el("h3", {}, "Passkeys"),
+      el("p", { class: "hint" }, "A passkey signs you in with your device's fingerprint, face or screen lock, and counts as two factors."),
+      el("div", { class: "box" }, list, footer),
+      out,
+    );
     async function load() {
       var data = await api("GET", "/v1/me/passkeys");
       clear(list);
-      if (data.items.length === 0) list.append(el("li", {}, el("span", { class: "muted" }, "No passkeys.")));
+      if (data.items.length === 0) list.append(blank("No passkeys yet."));
       data.items.forEach(function (p) {
-        var rm = el("button", { type: "button", class: "danger" }, "Remove");
+        var rm = el("button", { type: "button", class: "danger sm" }, "Remove");
         rm.addEventListener("click", function () {
           if (!confirm("Remove the passkey " + p.name + "?")) return;
           act(rm, out, async function () {
@@ -391,7 +632,7 @@
             await load();
           });
         });
-        list.append(el("li", {}, el("div", {}, el("strong", {}, p.name), el("p", { class: "hint" }, "Added " + when(p.created_at) + " · last used " + when(p.last_used_at))), rm));
+        list.append(row({ icon: "passkey", title: p.name, detail: "Added " + when(p.created_at) + " · last used " + when(p.last_used_at), action: rm }));
       });
     }
     form.addEventListener("submit", function (ev) {
@@ -415,7 +656,7 @@
     var out = status();
     var list = el("ul", { class: "rows" });
     var all = el("button", { type: "button", class: "danger" }, "Sign out everywhere");
-    s.append(list, all, out);
+    s.append(list, el("div", { class: "actions" }, all), out);
     all.addEventListener("click", function () {
       if (!confirm("Sign out of every device, this one included?")) return;
       act(all, out, async function () {
@@ -427,7 +668,7 @@
       var data = await api("GET", "/v1/me/sessions");
       clear(list);
       data.items.forEach(function (d) {
-        var end = el("button", { type: "button", class: "secondary" }, d.current ? "Sign out" : "Sign out this device");
+        var end = el("button", { type: "button", class: "secondary sm" }, d.current ? "Sign out" : "Sign out this device");
         end.addEventListener("click", function () {
           act(end, out, async function () {
             await api("DELETE", "/v1/me/sessions/" + encodeURIComponent(d.id));
@@ -435,20 +676,16 @@
             else await load();
           });
         });
-        var title = d.client ? "App: " + d.client : d.user_agent || "Unknown browser";
+        var mobile = /Mobi|iPhone|iPad|Android/.test(d.user_agent || "");
         list.append(
-          el(
-            "li",
-            {},
-            el(
-              "div",
-              {},
-              el("strong", {}, title),
-              d.current ? el("span", { class: "tag" }, "this device") : null,
-              el("p", { class: "hint" }, "Signed in " + when(d.created_at) + " · last seen " + when(d.last_seen_at) + (d.ip ? " · " + d.ip : "")),
-            ),
-            end,
-          ),
+          row({
+            icon: d.client ? "apps" : mobile ? "phone" : "monitor",
+            title: d.client ? "App: " + d.client : deviceName(d.user_agent),
+            tooltip: d.client ? null : d.user_agent,
+            tags: d.current ? tag("This device", "accent") : null,
+            detail: "Signed in " + when(d.created_at) + " · last seen " + when(d.last_seen_at) + (d.ip ? " · " + d.ip : ""),
+            action: end,
+          }),
         );
       });
     }
@@ -463,9 +700,9 @@
     var data = await api("GET", "/v1/me/access");
     accessItems = data.items;
     var list = el("ul", { class: "rows" });
-    if (accessItems.length === 0) list.append(el("li", {}, el("span", { class: "muted" }, "You don't have access to any service yet.")));
+    if (accessItems.length === 0) list.append(blank("You don't have access to any service yet."));
     accessItems.forEach(function (a) {
-      list.append(el("li", {}, el("div", {}, el("strong", {}, a.service), el("span", { class: "tag" }, a.role)), el("span", { class: "hint" }, "since " + when(a.granted_at))));
+      list.append(row({ icon: "apps", title: a.service, tags: tag(a.role), detail: "Since " + when(a.granted_at) }));
     });
     s.append(list);
   }
@@ -482,22 +719,13 @@
     var out = status();
     var list = el("ul", { class: "rows" });
     var created = slot(s);
-    s.append(
-      el(
-        "p",
-        { class: "muted" },
-        isApw
-          ? "For mail, calendar and other apps that can only take a password. Each works for one service and the scopes you choose."
-          : "For scripts and tools that call a service's API.",
-      ),
-    );
     s.append(list);
     async function load() {
       var data = await api("GET", "/v1/me/" + kind);
       clear(list);
-      if (data.items.length === 0) list.append(el("li", {}, el("span", { class: "muted" }, "None.")));
+      if (data.items.length === 0) list.append(blank(isApw ? "No app passwords." : "No API keys."));
       data.items.forEach(function (c) {
-        var rm = el("button", { type: "button", class: "danger" }, "Revoke");
+        var rm = el("button", { type: "button", class: "danger sm" }, "Revoke");
         rm.addEventListener("click", function () {
           if (!confirm("Revoke " + c.name + "? Anything using it stops working.")) return;
           act(rm, out, async function () {
@@ -505,9 +733,25 @@
             await load();
           });
         });
-        var meta = c.service + " · " + c.scopes.join(", ") + " · created " + when(c.created_at) + " · last used " + when(c.last_used_at);
+        var meta = "Created " + when(c.created_at) + " · last used " + when(c.last_used_at);
         if (!isApw) meta += c.expires_at ? " · expires " + when(c.expires_at) : " · no expiry";
-        list.append(el("li", {}, el("div", {}, el("strong", {}, c.name), isApw ? null : el("code", { class: "hint" }, " " + c.id), el("p", { class: "hint" }, meta)), rm));
+        list.append(
+          row({
+            icon: isApw ? "lock" : "key",
+            title: c.name,
+            tags: isApw ? null : el("code", { class: "hint" }, c.id),
+            extra: el(
+              "span",
+              { class: "tags" },
+              tag(c.service, "accent"),
+              c.scopes.map(function (sc) {
+                return tag(sc);
+              }),
+            ),
+            detail: meta,
+            action: rm,
+          }),
+        );
       });
     }
     if (services.length === 0) {
@@ -537,7 +781,16 @@
     drawScopes();
     var expires = el("input", { type: "date" });
     var create = el("button", { type: "submit" }, isApw ? "Create app password" : "Create API key");
-    var form = el("form", {}, el("label", {}, "Name", name), el("label", {}, "Service", service), scopes, isApw ? null : el("label", {}, "Expires (optional)", expires), create, out);
+    var form = el(
+      "form",
+      { class: "box-body narrow" },
+      el("label", {}, "Name", name),
+      el("label", {}, "Service", service),
+      scopes,
+      isApw ? null : el("label", {}, "Expires (optional)", expires),
+      create,
+      out,
+    );
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
       act(create, out, async function () {
@@ -555,7 +808,9 @@
         await load();
       });
     });
-    s.append(el("h3", {}, isApw ? "New app password" : "New API key"), form);
+    s.append(
+      el("div", { class: "box" }, el("div", { class: "box-header" }, el("h3", { class: "box-title" }, isApw ? "New app password" : "New API key")), form),
+    );
     return load();
   }
 
@@ -571,7 +826,29 @@
         location.assign("/login");
       });
     });
-    s.append(el("p", { class: "muted" }, "Deletes your account and signs you out everywhere."), del, out);
+    s.append(
+      el(
+        "section",
+        { id: "delete", class: "zone", "aria-labelledby": "delete-title" },
+        el("h2", { id: "delete-title", class: "danger" }, "Delete account"),
+        el(
+          "div",
+          { class: "box danger" },
+          el(
+            "div",
+            { class: "box-row" },
+            el(
+              "div",
+              { class: "row-main" },
+              el("div", { class: "row-title" }, "Delete this account"),
+              el("p", { class: "hint" }, "Deletes your account and signs you out everywhere. Every service is told to delete or anonymise your data."),
+            ),
+            del,
+          ),
+        ),
+        out,
+      ),
+    );
   }
 
   // ------------------------------------------------------------- render
@@ -580,22 +857,39 @@
     clear(root);
     var admin = document.getElementById("admin-link");
     if (admin) admin.hidden = !me.admin;
-    root.append(el("h1", {}, "Your account"));
-    renderProfile(section("profile", "Profile"));
-    var sec = section("security", "Security");
+    var nav = el(
+      "nav",
+      { class: "side-nav", "aria-label": "Account settings" },
+      PANES.map(function (p) {
+        return el("a", { href: "#" + p[0] }, icon(p[2]), p[1]);
+      }),
+    );
+    panes = el("div", { class: "panes" });
+    root.append(pageHead(), el("div", { class: "settings" }, nav, panes));
+
+    var profile = section("profile", "Profile");
+    renderProfile(profile);
+    if (me.account_deletion) renderDelete(profile);
+    var sec = section("security", "Password and authentication");
     renderPassword(sec);
-    renderTotp(sec);
-    renderRecovery(sec);
+    var tfa = el("div", { class: "box" });
+    sec.append(el("h3", {}, "Two-factor authentication"), tfa);
+    renderTotp(tfa);
+    renderRecovery(tfa);
     var pk = slot(sec);
-    var devices = section("devices", "Signed-in devices");
-    var access = section("access", "Your services");
-    var apw = section("app-passwords", "App passwords");
-    var keys = section("api-keys", "API keys");
-    if (me.account_deletion) renderDelete(section("delete", "Delete account"));
+    var devices = section("devices", "Signed-in devices", "These devices are signed in to your account. Sign out any you don't recognize.");
+    var access = section("access", "Your services", "The services you can use, and your role on each.");
+    var apw = section(
+      "app-passwords",
+      "App passwords",
+      "For mail, calendar and other apps that can only take a password. Each works for one service and the scopes you choose.",
+    );
+    var keys = section("api-keys", "API keys", "For scripts and tools that call a service's API.");
+    showPane();
     var fail = function (where) {
       return function (e) {
         if (e instanceof ApiError && (e.status === 401 || e.code === "reauth_required")) return;
-        where.append(el("p", { class: "error", role: "alert" }, (e && e.message) || "Couldn't load this."));
+        where.append(flash("error", (e && e.message) || "Couldn't load this."));
       };
     };
     await Promise.all([renderPasskeys(pk).catch(fail(pk)), renderDevices(devices).catch(fail(devices))]);
@@ -617,12 +911,12 @@
       await reload();
       if (location.hash) {
         var target = document.getElementById(location.hash.slice(1));
-        if (target) target.scrollIntoView();
+        if (target && !target.classList.contains("pane")) target.scrollIntoView();
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return;
       clear(root);
-      root.append(el("p", { class: "error", role: "alert" }, (e && e.message) || "Couldn't load your account."));
+      root.append(flash("error", (e && e.message) || "Couldn't load your account."));
     }
   })();
 })();

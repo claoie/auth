@@ -13,7 +13,7 @@ import { clear, failureWait, hit, recordFailure, tooMany } from "../throttle";
 import { consumeToken, emailAllowed, issueToken, peekToken } from "../tokens";
 import { transaction } from "../tx";
 import { findUser, findUserByLogin, insertUser, isUniqueViolation, USERNAME } from "../users";
-import { checkForm, extrasWith, formToken, h, hiddenCsrf, localPath, messagePage, page } from "./layout";
+import { checkForm, extrasWith, flash, formToken, h, hiddenCsrf, localPath, messagePage, page } from "./layout";
 import { accountKey, completeSignIn } from "./signin";
 
 // The pages around an account's life: sign-up, invitations, activation,
@@ -31,6 +31,7 @@ function field(label: string, name: string, attrs: string, value = ""): string {
 
 const PASSWORD_ATTRS = 'type="password" autocomplete="new-password" required minlength="12" maxlength="256"';
 const USERNAME_HINT = "3–32 characters: a–z, 0–9 and '-'. It can never change.";
+const PASSWORD_HINT = "At least 12 characters.";
 
 // ------------------------------------------------------------------- sign-up
 
@@ -38,8 +39,8 @@ function signupForm(app: App, req: Request, v: { returnTo: string; username?: st
   const { token, cookie } = formToken(req);
   const body = `
 <h1>Create an account</h1>
-${v.error ? `<p class="error" role="alert">${h(v.error)}</p>` : ""}
-<form method="post" action="/signup">
+${v.error ? flash("error", v.error) : ""}
+<form method="post" action="/signup" class="card">
   ${hiddenCsrf(token)}
   <input type="hidden" name="return_to" value="${h(v.returnTo)}">
   ${field("Username", "username", 'required pattern="[a-z][a-z0-9\\-]{1,30}[a-z0-9]" autocomplete="username" maxlength="32"', v.username)}
@@ -47,9 +48,10 @@ ${v.error ? `<p class="error" role="alert">${h(v.error)}</p>` : ""}
   ${field("Name", "name", 'autocomplete="name" maxlength="200"', v.name)}
   ${field("Email", "email", 'type="email" required autocomplete="email" maxlength="254"', v.email)}
   ${field("Password", "password", PASSWORD_ATTRS)}
-  <button type="submit">Create account</button>
+  <p class="hint">${h(PASSWORD_HINT)}</p>
+  <button type="submit" class="block">Create account</button>
 </form>
-<p class="links"><a href="/login?${new URLSearchParams({ return_to: v.returnTo })}">I have an account</a></p>`;
+<p class="callout">Already have an account? <a href="/login?${new URLSearchParams({ return_to: v.returnTo })}">Sign in</a></p>`;
   return page(app, "Create an account", body, { status, extras: extrasWith(cookie) });
 }
 
@@ -114,25 +116,30 @@ export async function getInvite({ req, url, deps: app }: Ctx<App>): Promise<Resp
   const { token: csrf, cookie } = formToken(req);
   const here = `/invite?${new URLSearchParams({ token: token ?? "" })}`;
   const accept = session
-    ? `<form method="post" action="/invite">
+    ? `<form method="post" action="/invite" class="card">
   ${hiddenCsrf(csrf)}
   <input type="hidden" name="token" value="${h(token)}">
   <input type="hidden" name="action" value="accept">
-  <button type="submit">Accept as ${h(session.username)}</button>
+  <p>You're signed in as <strong>${h(session.username)}</strong>.</p>
+  <button type="submit" class="block">Accept as ${h(session.username)}</button>
 </form>
 <p class="links"><a href="/login?${new URLSearchParams({ return_to: here })}">Sign in as someone else</a></p>`
-    : `<p><a class="button" href="/login?${new URLSearchParams({ return_to: here })}">Sign in to accept</a></p>
-<h2>Or create an account</h2>
-<form method="post" action="/invite">
+    : `<div class="card">
+  <p>Already have an account?</p>
+  <a class="button block" href="/login?${new URLSearchParams({ return_to: here })}">Sign in to accept</a>
+</div>
+<h2 class="divider">Or create an account</h2>
+<form method="post" action="/invite" class="card">
   ${hiddenCsrf(csrf)}
   <input type="hidden" name="token" value="${h(token)}">
   <input type="hidden" name="action" value="create">
-  <p>Email: ${h(invite.email)}</p>
+  <p class="field-static"><span>Email</span> <span>${h(invite.email)}</span></p>
   ${field("Username", "username", 'required pattern="[a-z][a-z0-9\\-]{1,30}[a-z0-9]" autocomplete="username" maxlength="32"')}
   <p class="hint">${h(USERNAME_HINT)}</p>
   ${field("Name", "name", 'autocomplete="name" maxlength="200"')}
   ${field("Password", "password", PASSWORD_ATTRS)}
-  <button type="submit">Create account and accept</button>
+  <p class="hint">${h(PASSWORD_HINT)}</p>
+  <button type="submit" class="block">Create account and accept</button>
 </form>`;
   const body = `<h1>You're invited to ${h(invite.service)}</h1>\n${accept}`;
   return page(app, "Invitation", body, { extras: extrasWith(cookie) });
@@ -198,13 +205,14 @@ export async function getActivate({ req, url, deps: app }: Ctx<App>): Promise<Re
   const { token: csrf, cookie } = formToken(req);
   const body = `
 <h1>Activate your account</h1>
-<p>Username: <strong>${h(user.username)}</strong></p>
-<form method="post" action="/activate">
+<form method="post" action="/activate" class="card">
   ${hiddenCsrf(csrf)}
   <input type="hidden" name="token" value="${h(token)}">
   <input type="hidden" name="username" value="${h(user.username)}" autocomplete="username">
+  <p class="field-static"><span>Username</span> <span>${h(user.username)}</span></p>
   ${field("Choose a password", "password", PASSWORD_ATTRS)}
-  <button type="submit">Set password</button>
+  <p class="hint">${h(PASSWORD_HINT)}</p>
+  <button type="submit" class="block">Set password</button>
 </form>`;
   return page(app, "Activate your account", body, { extras: extrasWith(cookie) });
 }
@@ -243,22 +251,24 @@ function resetRequestPage(app: App, req: Request, message?: string, status = 200
   const { token, cookie } = formToken(req);
   const body = `
 <h1>Reset your password</h1>
-${message ? `<p class="notice" role="status">${h(message)}</p>` : ""}
-<form method="post" action="/reset">
+${message ? flash("notice", message) : ""}
+<form method="post" action="/reset" class="card">
   ${hiddenCsrf(token)}
   <input type="hidden" name="action" value="email">
   ${field("Username or email", "login", 'required autocomplete="username" maxlength="254"')}
-  <button type="submit">Email me a link</button>
+  <p class="hint">We'll email a link to the account's address.</p>
+  <button type="submit" class="block">Email me a link</button>
 </form>
-<h2>Can't reach your email?</h2>
-<p>Use one of your recovery codes instead.</p>
-<form method="post" action="/reset">
+<h2 class="divider">Can't reach your email?</h2>
+<form method="post" action="/reset" class="card">
   ${hiddenCsrf(token)}
   <input type="hidden" name="action" value="recovery">
+  <p class="hint">Use one of your recovery codes instead.</p>
   ${field("Username", "login", 'required autocomplete="username" maxlength="254"')}
   ${field("Recovery code", "code", 'required autocomplete="off" maxlength="40"')}
   ${field("New password", "password", PASSWORD_ATTRS)}
-  <button type="submit">Reset with a recovery code</button>
+  <p class="hint">${h(PASSWORD_HINT)}</p>
+  <button type="submit" class="secondary block">Reset with a recovery code</button>
 </form>`;
   return page(app, "Reset your password", body, { status, extras: extrasWith(cookie) });
 }
@@ -358,23 +368,25 @@ export async function getResetConfirm({ req, url, deps: app }: Ctx<App>): Promis
   const factors = await factorsOf(app.sql, user.id);
   const { token: csrf, cookie } = formToken(req);
   const second = factors.totp
-    ? field("The 6-digit code from your authenticator app, or a recovery code", "code", 'required autocomplete="one-time-code" maxlength="40"')
+    ? `${field("Authentication code", "code", 'required autocomplete="one-time-code" maxlength="40"')}
+  <p class="hint">The 6-digit code from your authenticator app, or a recovery code.</p>`
     : factors.passkeys > 0
       ? `<input type="hidden" name="passkey" id="passkey-response">
-  <p>Confirm with your passkey, or enter a recovery code.</p>
-  <button type="button" id="passkey-confirm">Use my passkey</button>
+  <p class="hint">Confirm with your passkey, or enter a recovery code.</p>
+  <button type="button" class="secondary block" id="passkey-confirm">Use my passkey</button>
   <p class="error" id="passkey-error" role="alert" hidden></p>
   ${field("Recovery code", "code", 'autocomplete="off" maxlength="40"')}`
       : "";
   const body = `
 <h1>Choose a new password</h1>
-<form method="post" action="/reset/confirm" id="reset-form">
+<form method="post" action="/reset/confirm" id="reset-form" class="card">
   ${hiddenCsrf(csrf)}
   <input type="hidden" name="token" value="${h(token)}">
   <input type="hidden" name="username" value="${h(user.username)}" autocomplete="username">
   ${field("New password", "password", PASSWORD_ATTRS)}
+  <p class="hint">${h(PASSWORD_HINT)}</p>
   ${second}
-  <button type="submit">Change password</button>
+  <button type="submit" class="block">Change password</button>
 </form>`;
   return page(app, "Choose a new password", body, { scripts: factors.passkeys > 0 && !factors.totp ? ["signin.js"] : [], extras: extrasWith(cookie) });
 }
@@ -443,11 +455,11 @@ export async function getVerifyEmail({ req, url, deps: app }: Ctx<App>): Promise
   // A button, not the link itself, confirms: mail scanners open links.
   const body = `
 <h1>Confirm your email address</h1>
-<p>${h(row.email)}</p>
-<form method="post" action="/verify-email">
+<form method="post" action="/verify-email" class="card">
   ${hiddenCsrf(csrf)}
   <input type="hidden" name="token" value="${h(token)}">
-  <button type="submit">Confirm</button>
+  <p class="value">${h(row.email)}</p>
+  <button type="submit" class="block">Confirm</button>
 </form>`;
   return page(app, "Confirm your email address", body, { extras: extrasWith(cookie) });
 }
@@ -483,8 +495,10 @@ export async function getMfaRequired({ url, deps: app }: Ctx<App>): Promise<Resp
   const returnTo = localPath(url.searchParams.get("return_to"));
   const body = `
 <h1>Two-factor authentication needed</h1>
-<p>Your role on ${h(service)} needs a second factor. Add an authenticator app or a passkey to your account, then continue.</p>
-<p><a class="button" href="/account#security">Set up a second factor</a></p>
+<div class="card">
+  <p>Your role on ${h(service)} needs a second factor. Add an authenticator app or a passkey to your account, then continue.</p>
+  <a class="button block" href="/account#security">Set up a second factor</a>
+</div>
 <p class="links"><a href="${h(returnTo)}">Continue to ${h(service)}</a></p>`;
   return page(app, "Two-factor authentication needed", body);
 }
