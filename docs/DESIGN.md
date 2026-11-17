@@ -766,7 +766,7 @@ Counters live in the `throttle` table, so every copy shares them and a restart d
 | CSRF and clickjacking | §9.2 |
 | Cookie tossing from a sibling subdomain | `__Host-` cookies at auth and in every app |
 | A compromised app | It can mint nothing, read nothing of auth's beyond its own service's users, and change access only for its own service. Rotate its client secret. |
-| A compromised auth image | Every integrated app falls. So: no runtime dependencies, an image a deployment pins by digest (§11), MFA on `auth:admin`, and an alert on every access change for `auth` and on every break-glass use. |
+| A compromised auth image | Every integrated app falls. So: no runtime dependencies; an image run by digest (§11), either the deployment's own reviewed pin or the digest CD's run posts to its deploy hook, so that pushing over a tag changes nothing (a hook that pulls `latest` gives this up, and makes the registry credential as sensitive as merge rights); MFA on `auth:admin`; and an alert on every access change for `auth` and on every break-glass use. |
 | Database read by a third party | §9.3 |
 | An app password sent before TLS on a password-only protocol | The server refuses AUTH before TLS on every port (§12.4) |
 | A malicious admin, or a mistake | Audit log, an alert on admin actions, A5 needing an out-of-band check |
@@ -816,7 +816,7 @@ Every CLI action is audited as `host-cli` and posted to the alert webhook, if on
 
 `docs/DEPLOYMENT.md` is the guide. What the design asks of every deployment:
 
-- **Image.** CD publishes it from `main` once CI passes. A deployment runs it **pinned by digest**, never `latest`, so a release reaches it only through a change it reviews, and a push to this repo can't reach any deployment on its own.
+- **Image.** CD publishes it from `main` once CI passes and, when the repository names a deploy hook (`DEPLOY_URL`), posts the pushed image's digest to that hook to deploy. A deployment either follows releases through such a hook, so that a merge here is a release to it, or runs the image **pinned by digest** and moves the pin through a change it reviews, so that a push to this repo can't reach it on its own. Either way it runs an image by digest, never by a tag someone could push over.
 - **Runtime.**
   - One container behind a TLS-terminating proxy that sets `X-Real-IP` from the connecting address. No ports published on the host.
   - 128 MB and half a CPU (§10).
