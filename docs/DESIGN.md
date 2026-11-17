@@ -675,7 +675,9 @@ CREATE UNLOGGED TABLE throttle (                      -- shared across every cop
 **Passkeys (WebAuthn)**
 - The RP ID is the issuer's host (`auth.example.com`), not its parent domain. A compromised sibling subdomain can then never ask for an assertion.
 - `userVerification: "required"`, so a passkey is two factors by itself and skips TOTP. Attestation is `none`.
-- Verification uses `@simplewebauthn/server`. The CBOR and COSE parsing is where hand-rolled code goes wrong. It is the one runtime dependency, with JWTs done with `node:crypto`.
+- Verification is auth's own (`src/webauthn.ts`), with signatures checked by `node:crypto`, as JWTs are. Attestation being `none`, the attestation statement is never read, and no certificate is parsed.
+  - Keys are EdDSA (Ed25519), ES256 (P-256) or RS256 (2048 to 4096 bits, exponent 65537). A key is refused at registration unless its COSE key type, curve and size match its algorithm, and `node:crypto` accepts it.
+  - CBOR is read by a decoder for the subset WebAuthn uses: definite lengths, no tags or floats, no duplicate map keys. The CBOR a user sends is read only when a signed-in user adds a passkey. A sign-in reads JSON and the fixed-length start of the authenticator data, and checks the signature against the key auth stored.
 
 **Recovery codes:** 10 codes of 24 base32 characters (120 bits), shown as six groups of four. NIST SP 800-63B §5.1.2.2 asks for a salted password hash only for look-up secrets under 112 bits, so at this length a code is stored and found like an app password: by its SHA-256, in one indexed lookup scoped to the account. An attempt costs the same whether or not the account exists and however many codes it has left, and it never reaches the hashing semaphore. Each code is usable once; using one is audited and emailed.
 
@@ -764,7 +766,7 @@ Counters live in the `throttle` table, so every copy shares them and a restart d
 | CSRF and clickjacking | §9.2 |
 | Cookie tossing from a sibling subdomain | `__Host-` cookies at auth and in every app |
 | A compromised app | It can mint nothing, read nothing of auth's beyond its own service's users, and change access only for its own service. Rotate its client secret. |
-| A compromised auth image | Every integrated app falls. So: one runtime dependency, an image a deployment pins by digest (§11), MFA on `auth:admin`, and an alert on every access change for `auth` and on every break-glass use. |
+| A compromised auth image | Every integrated app falls. So: no runtime dependencies, an image a deployment pins by digest (§11), MFA on `auth:admin`, and an alert on every access change for `auth` and on every break-glass use. |
 | Database read by a third party | §9.3 |
 | An app password sent before TLS on a password-only protocol | The server refuses AUTH before TLS on every port (§12.4) |
 | A malicious admin, or a mistake | Audit log, an alert on admin actions, A5 needing an out-of-band check |
@@ -940,7 +942,7 @@ Both imports are all or nothing: every line is checked first, every problem is l
 
 **The cost of building it** is owning security-critical code. That is contained by:
 - the narrow scope (§7.2's "not implemented" list);
-- one runtime dependency, for WebAuthn;
+- no runtime dependencies: Bun's built-ins cover SQL, HTTP and crypto, and WebAuthn verification is auth's own (§9.1);
 - standard formats, so off-the-shelf conformance tests apply (the OpenID Foundation's Basic OP test plan);
 - review on every change (`docs/agents/auth-reviewer.md`).
 
