@@ -47,18 +47,32 @@ it.
    Docker Hub as `<namespace>/auth:latest` and `<namespace>/auth:sha-<short sha>`
    (the namespace is the account the CD secrets below name), and records the
    image digest in the run's summary.
+3. When the repository has a `DEPLOY_URL` secret, CD then POSTs
+   `{"sha", "repo"}` to it with `Authorization: Bearer <DEPLOY_SECRET>` and
+   waits for the answer. A refused or cut connection, 409, 502 and 504 are
+   retried a minute apart, up to 10 tries; any other answer than 2xx fails
+   the run. Only the status is printed, never the URL or the response.
+   Without `DEPLOY_URL`, CD stops after publishing.
 
-CD deploys nothing. A deployment pulls the image it chooses, **pinned by
-digest**, and upgrades by moving the pin in its own configuration, where it
-reviews the change. A push to this repository therefore can't reach any
-deployment on its own (`docs/DESIGN.md` §11).
+A deployment chooses how releases reach it (`docs/DESIGN.md` §11):
 
-**Rolling back** is moving the pin back to the previous digest. Migrations
-are expand-only, so the previous image runs against the newer schema.
+- **Following `latest`**, with a hook behind `DEPLOY_URL` that pulls the
+  image and replaces its copies: every release that passes CI goes live
+  minutes after its merge, so a merge here is a deploy, and this
+  repository's review rules (§4) are what stand between a change and it.
+- **Pinned by digest**: the deployment pulls the image it chooses and
+  upgrades by moving the pin in its own configuration, where it reviews the
+  change. A push to this repository can't reach it on its own.
 
-CD needs two repository secrets: `DOCKER_HUB_USERNAME`, and
-`DOCKER_HUB_ACCESS_TOKEN`, a Docker Hub access token that can push to the
-`auth` repository.
+**Rolling back.** Following `latest`, revert the change here, which
+releases and deploys the code before it, or pin the previous digest until a
+fix lands. Pinned, move the pin back. Migrations are expand-only, so the
+previous image runs against the newer schema either way.
+
+CD's repository secrets: `DOCKER_HUB_USERNAME`, and `DOCKER_HUB_ACCESS_TOKEN`,
+a Docker Hub access token that can push to the `auth` repository; and, to
+deploy, `DEPLOY_URL` and `DEPLOY_SECRET`, the deployment's hook and its
+bearer token.
 
 ## 3. What the runtime needs
 
@@ -213,4 +227,4 @@ service keeps nothing in memory that another copy needs (`docs/DESIGN.md`
   review required (`.github/CODEOWNERS`), the `check` and `image` CI jobs
   required, no force pushes.
 - **Private vulnerability reporting on** (`SECURITY.md`).
-- **The two CD secrets** from §2.
+- **The CD secrets** from §2.

@@ -816,7 +816,7 @@ Every CLI action is audited as `host-cli` and posted to the alert webhook, if on
 
 `docs/DEPLOYMENT.md` is the guide. What the design asks of every deployment:
 
-- **Image.** CD publishes it from `main` once CI passes. A deployment runs it **pinned by digest**, never `latest`, so a release reaches it only through a change it reviews, and a push to this repo can't reach any deployment on its own.
+- **Image.** CD publishes it from `main` once CI passes and, when the repository names a deploy hook (`DEPLOY_URL`), asks that hook to deploy it. A deployment either follows `latest` through such a hook, so that a merge here is a release to it, or runs the image **pinned by digest** and moves the pin through a change it reviews, so that a push to this repo can't reach it on its own.
 - **Runtime.**
   - One container behind a TLS-terminating proxy that sets `X-Real-IP` from the connecting address. No ports published on the host.
   - 128 MB and half a CPU (§10).

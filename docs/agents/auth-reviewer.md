@@ -216,7 +216,7 @@ Flag every M1 hit as **MED**, with the rewrite in the finding. A merged artifact
 - **The toolchain pin is one fact in three places:** `packageManager` in `package.json` (which `setup-bun` reads), both `FROM` lines in the Dockerfile, and the README. A diff that moves one moves all three.
 - **Every action is pinned to a full commit SHA with a version comment**, as the existing workflows are.
 - **CI's `image` job builds the image, starts it against Postgres and stops it with SIGTERM.** A change to the Dockerfile, the entry point, the healthcheck or shutdown handling keeps that job meaningful; weakening it to a bare `docker build` is a finding.
-- **CD publishes and never deploys.** Each deployment pins the image by digest in its own configuration (`docs/DEPLOYMENT.md` §2), so CD builds only `main`'s tip after CI passed for it and records the digest. A diff that adds a deploy trigger, deploys anywhere, publishes from any other ref, or publishes before CI passes is HIGH.
+- **CD publishes `main`'s tip after CI passed for it, and only then calls the deploy hook.** A deployment that follows `latest` takes each release through the hook in the `DEPLOY_URL` secret (`docs/DEPLOYMENT.md` §2), so a merge to `main` is a production deploy for it. A diff that publishes from any other ref, publishes or calls the hook before CI passes for the commit it publishes, posts a sha other than the one published, prints the hook's URL or response, or puts a deployment's hook URL or token anywhere but the secrets is HIGH.
 
 ### O. A product, not a deployment
 
