@@ -76,6 +76,9 @@ ${body}
 <meta name="referrer" content="no-referrer">
 ${meta}
 <title>${h(title)}</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 <link rel="stylesheet" href="/assets/style.css">
 ${scripts}
 </head>

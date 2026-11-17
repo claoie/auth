@@ -1,7 +1,7 @@
 import * as api from "./api";
 import type { App } from "./app";
 import { authorize, discovery, introspect, jwks, logout, revoke, token, userinfo } from "./oauth";
-import { accountPage, adminPage, assetRoute, home } from "./pages/app";
+import { accountPage, adminPage, assetRoute, favicon, home } from "./pages/app";
 import * as flows from "./pages/flows";
 import { getLogin, getSecondFactor, pageErrors, passkeyOptions, passkeySignIn, postLogin, postSecondFactor } from "./pages/signin";
 import { healthRoutes, Router } from "./server";
@@ -37,7 +37,8 @@ export function buildRouter(): Router<App> {
     .add("/mfa-required", "mfa_required", { GET: pages(flows.getMfaRequired) })
     .add("/account", "account", { GET: accountPage })
     .add("/admin", "admin", { GET: adminPage })
-    .add("/assets/:file", "asset", { GET: assetRoute });
+    .add("/assets/:file", "asset", { GET: assetRoute })
+    .add("/favicon.ico", "favicon", { GET: favicon });
 
   // Management API, self-service (§7.5)
   r.add("/v1/me", "v1.me", { GET: api.getMe, PATCH: api.patchMe, DELETE: api.deleteMe })
