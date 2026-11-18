@@ -282,12 +282,12 @@ Names and client ids are unique across both. When the file and the database both
 - **A service's name and a client's id and type are fixed.** A confidential client turned public would let anyone holding one of its refresh tokens use them without the secret, so a new type is a new client. A held copy can't give a file client's id another type either. And whatever an id's type becomes, through the file or a later registration, a refresh token is honored only for a client of the type it was issued to.
 - **A role is removed only when no one holds it and no pending invitation offers it,** and `409 conflict` answers otherwise. An access row whose role the service no longer declares would carry a role that `mfa_roles` can't name.
 - **A scope can be removed at any time.** App passwords and keys made earlier keep the scopes they were made with, and introspection reports them; new ones can't take it.
-- **`mfa_roles`, `signup` and `default_role`** apply from the next sign-in or refresh, and redirect URIs from the next request. Events already queued go to the current `events_url`.
+- **`mfa_roles`, `signup` and `default_role`** apply from the next sign-in or refresh, and redirect URIs from the next request. A code is redeemed only for a redirect URI its client still registers, and removing a URI also drops the unused codes issued for it. Events already queued go to the current `events_url`.
 - **Removing a client** revokes its secrets and refresh tokens and drops its unused codes, so a client registered later under the same id inherits nothing.
 - **Deleting a service** deletes every access row and invitation for it, and revokes its app passwords, API keys, clients' refresh tokens and secrets. It sends no event, since the app is gone. A service registered later under the same name starts empty. Deleting a held copy deletes only the copy.
 - **A registered service with `api_key_scopes`** needs `API_KEY_PREFIX`, as a file's does: it is refused without it, and a copy that starts without the prefix while one is registered stops and says so.
 
-**Moving a service from the file to the admin page, with no outage:** copy it to the database on the admin page, where the copy is held. Then remove it from the file and restart, and the copy is in effect. Access, credentials, invitations and client secrets are keyed by the service's name and client ids, so they carry over and no one signs in again. A held copy can be deleted, not changed. **To move one the other way**, into reviewed configuration, add it to the file and restart: the file's definition takes over, and the database's is held until it is deleted.
+**Moving a service from the file to the admin page, with no outage:** copy it to the database on the admin page, where the copy is held. Then remove it from the file and restart, and the copy is in effect. Access, credentials, invitations and client secrets are keyed by the service's name and client ids, so they carry over and no one signs in again. A held copy can be deleted, not changed. The first copy to start with it in effect audits and alerts that, naming its redirect URIs: an operator who drops a service from the file to retire it learns that its held copy took over, and deletes that too. **To move one the other way**, into reviewed configuration, add it to the file and restart: the file's definition takes over, and the database's is held until it is deleted.
 
 **What this lets an admin do.** An `auth:admin` who can add a redirect URI to a client and make its secret can sign in to that app as any of its users. So every change needs a sign-in in the last 15 minutes with a second factor, as a credential change does (§7.5), and every change is audited and alerted, the alert naming each redirect URI it adds (§9.5). A deployment that wants a service out of an admin's reach declares it in the file.
 
@@ -633,6 +633,7 @@ CREATE TABLE services (                               -- registered on the admin
   api_key_scopes      text[] NOT NULL DEFAULT '{}',
   app_password_scopes text[] NOT NULL DEFAULT '{}',
   events_url          text,
+  held                boolean NOT NULL DEFAULT false, -- held at the last start: taking effect after it is alerted
   created_by          text NOT NULL,                  -- usr_…
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now()
@@ -828,7 +829,7 @@ Counters live in the `throttle` table, so every copy shares them and a restart d
 | A compromised auth image | Every integrated app falls. So: no runtime dependencies; an image run by digest (§11), either the deployment's own reviewed pin or the digest CD's run posts to its deploy hook, so that pushing over a tag changes nothing (a hook that pulls `latest` gives this up, and makes the registry credential as sensitive as merge rights); MFA on `auth:admin`; and an alert on every access change for `auth` and on every break-glass use. |
 | Database read by a third party | §9.3 |
 | An app password sent before TLS on a password-only protocol | The server refuses AUTH before TLS on every port (§12.4) |
-| A malicious admin, or a mistake | Audit log, an alert on admin actions, A5 needing an out-of-band check. A change to a service, which can add a redirect URI and make a secret, needs a recent sign-in with a second factor, and its alert names each redirect URI it adds; a service in the services file is out of an admin's reach (§6.2). |
+| A malicious admin, or a mistake | Audit log, an alert on admin actions, A5 needing an out-of-band check. A change to a service, which can add a redirect URI and make a secret, needs a recent sign-in with a second factor, and its alert names each redirect URI it adds; a service in the services file is out of an admin's reach while the file declares it, and a held copy that takes over once the file no longer does is alerted (§6.2). |
 | Account takeover through the recovery email | Old-address notice on change, second factor still required after a reset, 30-minute single-use links |
 
 ### 9.6 Availability and break-glass
