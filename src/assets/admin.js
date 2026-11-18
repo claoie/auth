@@ -240,6 +240,9 @@
       return n.getAttribute("data-resume") === saved.action;
     });
     if (!target) return;
+    // A change noted in a section that starts folded is shown again.
+    var folded = target.closest("details");
+    if (folded) folded.open = true;
     var whole = true;
     var retype = null;
     saved.fields.forEach(function (s, i) {
@@ -253,7 +256,9 @@
       else if (f.type === "checkbox") f.checked = s[1];
       else {
         f.value = s[1];
-        if (f.tagName === "SELECT") f.dispatchEvent(new Event("change"));
+        // Its listeners hear of it as of a choice or a keystroke: naming a
+        // service's roles redraws the ones that need a second factor.
+        f.dispatchEvent(new Event(f.tagName === "SELECT" ? "change" : "input"));
       }
     });
     if (fieldsOf(target).length !== saved.fields.length) whole = false;
@@ -400,8 +405,9 @@
     ["audit", "Audit log", showAudit],
   ];
 
-  // A tab, or with "users/<id>" one user: the hash says which, so a reload,
-  // or signing in again on the way, comes back to it.
+  // A tab, or with "users/<id>" one user, or with "services/<name>" one
+  // service's editor: the hash says which, so a reload, or signing in again
+  // on the way, comes back to it.
   function go(name) {
     var parts = (name || "").split("/");
     var tab =
@@ -409,14 +415,15 @@
         return t[0] === parts[0];
       }) || TABS[0];
     var user = tab[0] === "users" && parts.length === 2 && parts[1] ? parts[1] : null;
+    var editing = tab[0] === "services" && parts.length === 2 && parts[1] ? parts[1] : null;
     Array.prototype.forEach.call(tabs.children, function (b) {
       if (b.dataset.tab === tab[0]) b.setAttribute("aria-current", "page");
       else b.removeAttribute("aria-current");
     });
-    var hash = "#" + tab[0] + (user ? "/" + user : "");
+    var hash = "#" + tab[0] + (user ? "/" + user : editing ? "/" + editing : "");
     if (location.hash !== hash) history.replaceState(null, "", hash);
     clear(view);
-    return (user ? showUser(user) : tab[2]()).catch(function (e) {
+    return (user ? showUser(user) : editing ? showServiceEditor(editing) : tab[2]()).catch(function (e) {
       if (e instanceof ApiError && e.status === 401) return;
       view.append(flash("error", (e && e.message) || "Couldn't load this."));
     });
@@ -952,9 +959,10 @@
 
   // Redraws the tab, keeping what was just shown once (a secret) on top.
   function redrawServices(top) {
+    if (location.hash !== "#services") history.replaceState(null, "", "#services");
     clear(view);
     return showServices(top).catch(function (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.code === "reauth_required")) return;
+      if (e instanceof ApiError && e.status === 401) return;
       view.append(flash("error", (e && e.message) || "Couldn't load this."));
     });
   }
@@ -1021,7 +1029,7 @@
       var actions = null;
       // A services file client's secret comes from the CLI (docs/DESIGN.md §6.2).
       if (c.type === "confidential" && !held && s.source === "database") {
-        var make = el("button", { type: "button", class: "secondary sm" }, icon("key"), "New secret");
+        var make = el("button", { type: "button", class: "secondary sm", "data-resume": "client-secret:" + c.id }, icon("key"), "New secret");
         make.addEventListener("click", function () {
           var live = (c.secrets || []).length;
           if (live > 0 && !confirm("Make a new secret for " + c.id + "? The newest current one keeps working until you retire it; " + (live > 1 ? "the oldest stops now." : "move the app to the new one, then retire the old."))) return;
@@ -1032,7 +1040,7 @@
         });
         var retire = null;
         if ((c.secrets || []).length > 1) {
-          retire = el("button", { type: "button", class: "danger sm" }, "Retire older");
+          retire = el("button", { type: "button", class: "danger sm", "data-resume": "client-retire:" + c.id }, "Retire older");
           retire.addEventListener("click", function () {
             if (!confirm("Retire " + c.id + "'s older secret? An app still using it stops signing people in.")) return;
             act(retire, out, async function () {
@@ -1074,9 +1082,9 @@
     if (s.source === "database" && !held) {
       var edit = el("button", { type: "button", class: "secondary sm" }, "Edit");
       edit.addEventListener("click", function () {
-        showServiceEditor(s);
+        go("services/" + s.name);
       });
-      var del = el("button", { type: "button", class: "danger sm" }, "Delete");
+      var del = el("button", { type: "button", class: "danger sm", "data-resume": "service-delete:" + s.name }, "Delete");
       del.addEventListener("click", function () {
         var typed = prompt(
           "Delete " + s.name + "? Everyone's role on it, its invitations, app passwords, API keys and client secrets go with it, and its app's sign-ins stop. Type " + s.name + " to confirm.",
@@ -1090,7 +1098,7 @@
       });
       footer = el("div", { class: "box-footer actions" }, edit, del, out);
     } else if (held) {
-      var drop = el("button", { type: "button", class: "danger sm" }, "Delete the copy");
+      var drop = el("button", { type: "button", class: "danger sm", "data-resume": "service-delete-held:" + s.name }, "Delete the copy");
       drop.addEventListener("click", function () {
         if (!confirm("Delete the held copy of " + s.name + "? The services file's stays in effect, with everything granted on it.")) return;
         act(drop, out, async function () {
@@ -1103,7 +1111,7 @@
       if (hasHeldCopy) {
         footer = el("div", { class: "box-footer" }, el("p", { class: "hint" }, "A copy is held here. Remove " + s.name + " from the services file and restart auth, and the copy takes over."), out);
       } else {
-        var copy = el("button", { type: "button", class: "secondary sm" }, "Copy to the admin page");
+        var copy = el("button", { type: "button", class: "secondary sm", "data-resume": "service-copy:" + s.name }, "Copy to the admin page");
         copy.addEventListener("click", function () {
           act(copy, out, async function () {
             await api("POST", "/v1/services", definitionOf(s));
@@ -1169,7 +1177,12 @@
     return body;
   }
 
-  function showServiceEditor(s) {
+  async function showServiceEditor(name) {
+    var data = await reloadServices();
+    var s = data.items.find(function (x) {
+      return x.name === name && x.source === "database";
+    });
+    if (!s) return redrawServices(flash("error", "There is no service " + name + " registered here to edit."));
     clear(view);
     var back = el("button", { type: "button", class: "secondary sm" }, icon("back"), "All services");
     back.addEventListener("click", function () {
@@ -1293,7 +1306,7 @@
     var submit = el("button", { type: "submit" }, existing ? "Save changes" : "Register");
     var form = el(
       "form",
-      { class: "service-form" },
+      { class: "service-form", "data-resume": existing ? "service-edit:" + existing.name : "service-register" },
       name ? [el("label", {}, "Name", name), el("p", { class: "hint" }, "The audience in its tokens: a–z, 0–9 and '-'. It can never change.")] : null,
       el("label", {}, "Roles", roles),
       el("p", { class: "hint" }, "Lowest first, separated by spaces. Each person holds at most one."),
