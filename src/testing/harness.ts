@@ -212,7 +212,7 @@ export class Browser {
 
   async signIn(login: string, password: string, code?: string): Promise<Response> {
     const res = await this.form("/login", { login, password, return_to: "/account" });
-    if (res.headers.get("Location") === "/login/second-factor" && code !== undefined) {
+    if (res.headers.get("Location")?.startsWith("/login/second-factor?") && code !== undefined) {
       return this.form("/login/second-factor", { code });
     }
     return res;

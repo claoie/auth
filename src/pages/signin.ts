@@ -40,6 +40,11 @@ function minutes(seconds: number): string {
   return m <= 1 ? "a minute" : `${m} minutes`;
 }
 
+// The sign-in form again, still leading where the sign-in was going.
+function loginAgain(returnTo: string): string {
+  return `/login?${new URLSearchParams({ return_to: returnTo })}`;
+}
+
 function loginForm(app: App, req: Request, opts: { returnTo: string; login?: string; error?: string; notice?: string; status?: number }): Response {
   const { token, cookie } = formToken(req);
   const body = `
@@ -124,46 +129,51 @@ export async function postLogin({ req, ip, deps: app }: Ctx<App>): Promise<Respo
   const factors = await factorsOf(app.sql, user.id);
   if (factors.totp) {
     const pending: Pending = { u: user.id, id: randomToken(), r: returnTo };
-    return redirect("/login/second-factor", {
+    // return_to rides along in the URL and the form too, so that starting
+    // over, or a pending sign-in that expired, still leads back to it. A
+    // finished sign-in follows only the sealed one.
+    return redirect(`/login/second-factor?${new URLSearchParams({ return_to: returnTo })}`, {
       cookies: [setCookie(PENDING, app.crypt.sealValue(PENDING, pending, PENDING_SECONDS), PENDING_SECONDS)],
     });
   }
   return completeSignIn(app, req, ip, user.id, ["pwd"], returnTo, "password");
 }
 
-function secondFactorForm(app: App, req: Request, error?: string, status = 200): Response {
+function secondFactorForm(app: App, req: Request, returnTo: string, error?: string, status = 200): Response {
   const { token, cookie } = formToken(req);
   const body = `
 <h1>Second factor</h1>
 ${error ? flash("error", error) : ""}
 <form method="post" action="/login/second-factor" class="card">
   ${hiddenCsrf(token)}
+  <input type="hidden" name="return_to" value="${h(returnTo)}">
   <label>Authentication code
     <input name="code" autocomplete="one-time-code" inputmode="text" required maxlength="40" autofocus></label>
   <p class="hint">The 6-digit code from your authenticator app, or a recovery code.</p>
   <button type="submit" class="block">Continue</button>
 </form>
-<p class="links"><a href="/login">Start over</a></p>`;
+<p class="links"><a href="${h(loginAgain(returnTo))}">Start over</a></p>`;
   return page(app, "Second factor", body, { status, extras: extrasWith(cookie) });
 }
 
-export async function getSecondFactor({ req, deps: app }: Ctx<App>): Promise<Response> {
-  if (!app.crypt.openValue<Pending>(PENDING, hostCookie(req, PENDING))) return redirect("/login");
-  return secondFactorForm(app, req);
+export async function getSecondFactor({ req, url, deps: app }: Ctx<App>): Promise<Response> {
+  const pending = app.crypt.openValue<Pending>(PENDING, hostCookie(req, PENDING));
+  if (!pending) return redirect(loginAgain(localPath(url.searchParams.get("return_to"))));
+  return secondFactorForm(app, req, pending.r);
 }
 
 export async function postSecondFactor({ req, ip, deps: app }: Ctx<App>): Promise<Response> {
   const form = await readForm(req);
   checkForm(app, req, form);
   const pending = app.crypt.openValue<Pending>(PENDING, hostCookie(req, PENDING));
-  if (!pending) return redirect("/login");
+  if (!pending) return redirect(loginAgain(localPath(form.get("return_to"))));
   // Five attempts per password sign-in, then it starts over (§9.4). Each
   // failure also counts against the account, so starting over again and
   // again doesn't buy more guesses.
   const attempts = await hit(app.sql, `mfa:${pending.id}`, SECOND_FACTOR_ATTEMPTS, PENDING_SECONDS);
   const wait = await failureWait(app.sql, accountKey(pending.u));
   if (!attempts.allowed || !wait.allowed) {
-    const res = messagePage(app, 429, "Too many attempts", "Too many wrong codes. Sign in again later.", { href: "/login", text: "Sign in" });
+    const res = messagePage(app, 429, "Too many attempts", "Too many wrong codes. Sign in again later.", { href: loginAgain(pending.r), text: "Sign in" });
     res.headers.append("Set-Cookie", clearCookie(PENDING));
     return res;
   }
@@ -171,7 +181,7 @@ export async function postSecondFactor({ req, ip, deps: app }: Ctx<App>): Promis
   if (!kind) {
     await recordFailure(app.sql, accountKey(pending.u));
     await audit(app.sql, { actor: null, action: "login.mfa_fail", userId: pending.u, ip });
-    return secondFactorForm(app, req, "That code didn't work.", 401);
+    return secondFactorForm(app, req, pending.r, "That code didn't work.", 401);
   }
   return completeSignIn(app, req, ip, pending.u, ["pwd", "otp", "mfa"], pending.r, kind === "recovery" ? "recovery_code" : "totp");
 }

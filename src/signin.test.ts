@@ -109,7 +109,7 @@ describe.skipIf(!TEST_DATABASE_URL)("sign-in", () => {
 
     const c = new Browser(t, "192.0.2.61");
     const first = await c.form("/login", { login: "carol", password: PW });
-    expect(first.headers.get("Location")).toBe("/login/second-factor");
+    expect(first.headers.get("Location")).toBe("/login/second-factor?return_to=%2Faccount");
     expect(c.cookies.has("__Host-auth")).toBe(false);
     // The enrolment used the current step; the next one is fresh.
     const step = stepAt(Date.now() / 1000) + 1;
@@ -157,6 +157,44 @@ describe.skipIf(!TEST_DATABASE_URL)("sign-in", () => {
     const again = await e.form("/login", { login: "carol3", password: PW });
     expect(again.status).toBe(429);
     void secret;
+  });
+
+  test("every way out of the second step leads back to return_to; a finished one follows the sealed one", async () => {
+    await makeUser(t, { username: "carol4", password: PW });
+    const b = new Browser(t, "192.0.2.73");
+    await b.signIn("carol4", PW);
+    const secret = await enrolTotp(b);
+    const back = "/account?resume=1#app-passwords";
+    const again = `/login?${new URLSearchParams({ return_to: back })}`;
+
+    const c = new Browser(t, "192.0.2.74");
+    const step = (await c.form("/login", { login: "carol4", password: PW, return_to: back })).headers.get("Location")!;
+    expect(step).toBe(`/login/second-factor?${new URLSearchParams({ return_to: back })}`);
+    const html = await (await c.request(step)).text();
+    expect(html).toContain(`<input type="hidden" name="return_to" value="${back}">`);
+    expect(html).toContain(`<a href="${again}">Start over</a>`);
+    const wrong = await c.form("/login/second-factor", { code: "000000", return_to: back });
+    expect(wrong.status).toBe(401);
+    expect(await wrong.text()).toContain(`<a href="${again}">Start over</a>`);
+
+    // The pending sign-in lapses with its cookie, after five minutes.
+    c.cookies.delete("__Host-pending");
+    expect((await c.form("/login/second-factor", { code: "000000", return_to: back })).headers.get("Location")).toBe(again);
+    expect((await c.request(step)).headers.get("Location")).toBe(again);
+    const evil = await c.request(`/login/second-factor?${new URLSearchParams({ return_to: "//evil.example.com/" })}`);
+    expect(evil.headers.get("Location")).toBe("/login?return_to=%2Faccount");
+
+    const d = new Browser(t, "192.0.2.75");
+    await d.form("/login", { login: "carol4", password: PW, return_to: back });
+    const ok = await d.form("/login/second-factor", { code: hotp(secret, stepAt(Date.now() / 1000) + 1), return_to: "/admin" });
+    expect(ok.headers.get("Location")).toBe(back);
+
+    const e = new Browser(t, "192.0.2.76");
+    await e.form("/login", { login: "carol4", password: PW, return_to: back });
+    let out: Response | undefined;
+    for (let i = 0; i < 6; i++) out = await e.form("/login/second-factor", { code: "000000" });
+    expect(out!.status).toBe(429);
+    expect(await out!.text()).toContain(`href="${again}"`);
   });
 
   test("a same-origin form post a browser marks Origin: null is accepted; null alone is not", async () => {
