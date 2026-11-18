@@ -2,7 +2,7 @@
 
 How the image is built and released, and what any deployment of it needs.
 `docs/DESIGN.md` §11 sets the requirements this follows. Everything that
-differs between deployments (the issuer URL, the services file, secrets,
+differs between deployments (the issuer URL, its services, secrets,
 limits) is the deployment's own configuration (`docs/DESIGN.md` §2).
 
 ## 1. The image
@@ -84,7 +84,10 @@ A deployment chooses how releases reach it (`docs/DESIGN.md` §11):
 **Rolling back.** Following releases, revert the change here, which
 releases and deploys the code before it, or pin the previous digest until a
 fix lands. Pinned, move the pin back. Migrations are expand-only, so the
-previous image runs against the newer schema either way.
+previous image runs against the newer schema either way. An image from
+before services could be registered on the admin page reads only the
+services file: before rolling back to one, declare the registered services
+in the file, or their apps stop signing people in.
 
 CD's repository secrets: `DOCKER_HUB_USERNAME`, and `DOCKER_HUB_ACCESS_TOKEN`,
 a Docker Hub access token that can push to the `auth` repository; and, to
@@ -100,7 +103,7 @@ bearer token.
 | `PORT` | no | `3000` (the image sets it) | HTTP listen port |
 | `DATABASE_URL` | yes | — | Postgres connection string for the auth database |
 | `ISSUER_URL` | yes | — | The issuer: the https origin browsers and apps reach auth at, with no path. It is every token's `iss` and the passkeys' RP ID, so changing it signs everyone out and invalidates every passkey. |
-| `SERVICES_FILE` | yes | — | Path to the services file inside the container (below) |
+| `SERVICES_FILE` | no | none | Path to a services file inside the container (below) |
 | `AUTH_ENCRYPTION_KEY` | yes | — | 32 random bytes, base64 (`openssl rand -base64 32`), optionally written `v<N>:<base64>` to give it a version (a bare key is version 1). Encrypts signing keys and TOTP secrets at rest. Keep a copy offline: a restored backup is useless without it. |
 | `AUTH_DECRYPTION_KEYS` | during a key rotation | — | Other keys, `v<N>:<base64>`, comma-separated, that decrypt but never encrypt (below) |
 | `API_KEY_PREFIX` | when a service declares `api_key_scopes` | — | The first part of every API key (`[a-z][a-z0-9]{1,15}`), so the deployment can register the pattern with a secret scanner |
@@ -115,12 +118,30 @@ Secrets (`DATABASE_URL`, `AUTH_ENCRYPTION_KEY` and `AUTH_DECRYPTION_KEYS`, the p
 a token in `ALERT_WEBHOOK_URL`) come from the deployment's secret store into
 the environment, never from the image or the database.
 
-### The services file
+### Services
 
-A JSON file the deployment keeps with its own configuration and mounts
-read-only, for example at `/etc/auth/services.json`. `docs/DESIGN.md` §6
+An `auth:admin` registers each app as a service on the admin page's
+Services tab (`docs/DESIGN.md` §6.2), with no shell on the host and no
+restart. The tab then makes each confidential client's secret and shows it
+once, with the other settings the app needs: the issuer, the client id, the
+redirect URI and the audience. Every change reaches every copy at its next
+request, needs a sign-in in the last 15 minutes with a second factor, and is
+audited and alerted.
+
+A deployment that keeps its services in configuration it reviews elsewhere
+can declare some or all of them in a services file instead: a JSON file kept
+with its own configuration and mounted read-only, for example at
+`/etc/auth/services.json`, named by `SERVICES_FILE`. `docs/DESIGN.md` §6
 defines its fields; the server checks it at start and refuses to start on
-any problem, listing all of them. Changing it takes a restart.
+any problem, listing all of them. Its services are read-only on the admin
+page, out of an admin's reach, and change with a restart.
+
+To move a service from the file to the admin page with no outage, use
+**Copy to the admin page** on its card: the copy is held while the file
+still declares the service. Then remove it from the file and restart; the
+copy takes over, and access, credentials and client secrets carry over. To
+pin one the other way, add it to the file and restart, then delete the held
+copy.
 
 ### First admin and client secrets
 
@@ -129,15 +150,17 @@ Run the CLI inside a running container (`docker exec <container> bun cli.ts
 
 ```sh
 bun cli.ts user create --username alice --email alice@example.com --access auth:admin
-bun cli.ts client secret wiki
 ```
 
-The first emails an activation link (add `--print-link` to print it instead
-when email isn't working yet). The admin then sets a password, signs in and
-enrolls a second factor, which `auth:admin` always requires. The second
-prints a confidential client's secret once, for the app's environment. To
-rotate one, run it again, move the app to the new secret, then run
-`bun cli.ts client retire-old-secrets wiki`.
+It emails an activation link (add `--print-link` to print it instead when
+email isn't working yet). The admin then sets a password, signs in and
+enrolls a second factor, which `auth:admin` always requires, and registers
+services from there.
+
+A confidential client's secret is made on the admin page, or with
+`bun cli.ts client secret wiki`, which prints it once. To rotate one, make a
+new one, move the app to it, then retire the old one: **Retire older** on
+the admin page, or `bun cli.ts client retire-old-secrets wiki`.
 
 ### Rotating the encryption key
 

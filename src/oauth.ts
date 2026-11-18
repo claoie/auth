@@ -10,6 +10,7 @@ import { emitSessionEnded } from "./events";
 import { errorResponse, HttpError, json, readForm, redirect, single } from "./http";
 import { signJwt, verifyJwt } from "./jwt";
 import { parseIp, formatIp } from "./net";
+import { lockClient } from "./registry";
 import { messagePage } from "./pages/layout";
 import type { Ctx } from "./server";
 import type { Client, Service } from "./services";
@@ -229,6 +230,7 @@ async function codeGrant(app: App, client: Client, service: Service, form: URLSe
   if (!VERIFIER.test(verifier)) tokenError(400, "invalid_request", "code_verifier is malformed.");
 
   const result = await app.sql.begin(async (tx) => {
+    await lockClient(tx, service, client);
     // Marked used before anything else is checked, in one statement, so a
     // code is redeemed at most once however many requests race.
     const [row] = await tx`
@@ -302,6 +304,7 @@ async function refreshGrant(app: App, client: Client, service: Service, form: UR
   const hash = sha256(presented.length <= 256 ? presented : "");
 
   const result = await transaction(app.sql, async (tx, after) => {
+    await lockClient(tx, service, client);
     const [found] = await tx`SELECT family_id FROM refresh_tokens WHERE token_hash = ${hash}`;
     if (!found) return null;
     await lockFamily(tx, found.family_id);

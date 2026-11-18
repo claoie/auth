@@ -3,6 +3,7 @@ import type { App } from "./app";
 import { audit } from "./audit";
 import { emit } from "./events";
 import { HttpError } from "./http";
+import { lockService } from "./registry";
 import { AUTH_SERVICE, type Service } from "./services";
 import type { After } from "./tx";
 
@@ -50,11 +51,13 @@ export interface Grant {
 
 // Creates or changes a row, and tells the service in the same transaction.
 export async function putAccess(tx: SQL, app: App, g: Grant, after: After): Promise<AccessRow> {
-  if (!g.service.roles.includes(g.role)) {
-    throw new HttpError(400, "invalid_request", `"${g.role}" is not a role of ${g.service.name}: use ${g.service.roles.join(", ")}.`);
+  // Checked against the service as it is at commit, not as the request found it.
+  const service = await lockService(tx, g.service);
+  if (!service.roles.includes(g.role)) {
+    throw new HttpError(400, "invalid_request", `"${g.role}" is not a role of ${service.name}: use ${service.roles.join(", ")}.`);
   }
   const [current] = await tx`SELECT role FROM access WHERE user_id = ${g.userId} AND service = ${g.service.name} FOR UPDATE`;
-  if (current && (current.role === g.role || (g.neverLower && g.service.roles.indexOf(current.role) > g.service.roles.indexOf(g.role)))) {
+  if (current && (current.role === g.role || (g.neverLower && service.roles.indexOf(current.role) > service.roles.indexOf(g.role)))) {
     const [row] = await tx`SELECT service, role, granted_by, granted_at FROM access WHERE user_id = ${g.userId} AND service = ${g.service.name}`;
     return row as AccessRow;
   }

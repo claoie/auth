@@ -395,7 +395,8 @@ label + .hint,
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -417,14 +418,24 @@ input::placeholder {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   outline: none;
   border-color: var(--focus);
   box-shadow: inset 0 0 0 1px var(--focus);
 }
 
-input[readonly] {
-  background: var(--bg-muted);
+input[readonly],
+select:disabled {
+  background-color: var(--bg-muted);
+}
+
+/* One URI per line; long ones wrap rather than scroll the page. */
+textarea {
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 13px;
+  word-break: break-all;
 }
 
 input[type="checkbox"],
@@ -1417,6 +1428,40 @@ details.box > form {
   gap: 16px;
 }
 
+.services-grid .box-footer.actions > .error,
+.services-grid .box-footer.actions > .success {
+  flex-basis: 100%;
+}
+
+.box > form.service-form {
+  padding: 16px;
+}
+
+details.box > form.service-form,
+.box > form.service-form {
+  max-width: 40rem;
+}
+
+/* Each client of a service, set apart within the form. */
+.client-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+fieldset.client {
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+}
+
+fieldset.client > legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 0;
+}
+
 /* ------------------------------------------------------------- wider screens */
 
 @media (min-width: 768px) {
@@ -1475,7 +1520,8 @@ details.box > form {
 @media (max-width: 767.98px) {
   /* 16px keeps phones from zooming into a field on focus. */
   input,
-  select {
+  select,
+  textarea {
     font-size: 16px;
   }
 

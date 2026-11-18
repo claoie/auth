@@ -1,9 +1,11 @@
-// The deployment's services file (docs/DESIGN.md §6): which services exist,
-// their roles, sign-up policy, scopes, clients and event URL. It is read once
-// at start; a file that breaks any rule stops the start with every problem
-// listed.
+// Services (docs/DESIGN.md §6, §6.2): which services exist, their roles,
+// sign-up policy, scopes, clients and event URL. They come from the services
+// file, read once at start, where a rule broken stops the start with every
+// problem listed, and from the database, where the same rules refuse a
+// registration (registry.ts).
 
 export type Signup = "closed" | "invite" | "open";
+export type ServiceSource = "builtin" | "file" | "database";
 
 export interface Client {
   id: string;
@@ -24,6 +26,7 @@ export interface Service {
   appPasswordScopes: string[];
   clients: Client[];
   eventsUrl: string | null;
+  source: ServiceSource;
 }
 
 // auth's own service: its one role manages every service and reads the audit
@@ -40,15 +43,20 @@ const AUTH: Service = {
   appPasswordScopes: [],
   clients: [],
   eventsUrl: null,
+  source: "builtin",
 };
 
+// One set of services, as a request sees it from start to end. `held` are
+// the database's services that the file overrides (§6.2): listed, not used.
 export class Services {
   readonly #byName: Map<string, Service>;
   readonly #clients: Map<string, Client>;
+  readonly held: readonly Service[];
 
-  constructor(services: Service[]) {
+  constructor(services: Service[], held: Service[] = []) {
     this.#byName = new Map([AUTH, ...services].map((s) => [s.name, s]));
     this.#clients = new Map(services.flatMap((s) => s.clients.map((c) => [c.id, c] as const)));
+    this.held = held;
   }
 
   get(name: string): Service | undefined {
@@ -133,83 +141,130 @@ export function parseServices(text: string): { services: Services; problems: str
   const clientIds = new Set<string>();
   doc.services.forEach((raw: unknown, i: number) => {
     const at = isObject(raw) && typeof raw.name === "string" ? `service "${raw.name}"` : `services[${i}]`;
-    const p = (msg: string) => problems.push(`${at}: ${msg}`);
-    if (!isObject(raw)) return p("must be an object");
-    for (const key of Object.keys(raw)) if (!SERVICE_FIELDS.has(key)) p(`unknown field "${key}"`);
+    const parsed = parseService(raw, "file");
+    for (const msg of parsed.problems) problems.push(`${at}: ${msg}`);
+    const s = parsed.service;
+    if (names.has(s.name)) problems.push(`${at}: name is used by another service`);
+    names.add(s.name);
+    s.clients.forEach((c, j) => {
+      if (clientIds.has(c.id)) problems.push(`${at}: clients[${j}]: id "${c.id}" is used by another client`);
+      clientIds.add(c.id);
+    });
+    services.push(s);
+  });
 
-    const name = typeof raw.name === "string" ? raw.name : "";
-    if (!SERVICE_NAME.test(name)) p("name must match [a-z][a-z0-9-]{0,62}");
-    else if (name === AUTH_SERVICE) p(`the name "${AUTH_SERVICE}" is reserved`);
-    else if (names.has(name)) p("name is used by another service");
-    names.add(name);
+  return { services: new Services(services), problems };
+}
 
-    const roles = stringList(raw.roles, ROLE, "roles", p, { required: true, nonEmpty: true });
-    const mfaRoles = stringList(raw.mfa_roles, ROLE, "mfa_roles", p, { required: true, nonEmpty: false });
-    for (const r of mfaRoles) if (!roles.includes(r)) p(`mfa_roles has "${r}", which is not one of roles`);
+// One service in the shape of §6, from the file or a registration's body.
+// Every problem is listed; rules across services (unique names and client
+// ids) are the caller's.
+export function parseService(raw: unknown, source: "file" | "database"): { service: Service; problems: string[] } {
+  const problems: string[] = [];
+  const p = (msg: string) => problems.push(msg);
+  if (!isObject(raw)) {
+    p("must be an object");
+    raw = {};
+  }
+  const r = raw as Record<string, any>;
+  for (const key of Object.keys(r)) if (!SERVICE_FIELDS.has(key)) p(`unknown field "${key}"`);
 
-    const signup = raw.signup;
-    if (signup !== "closed" && signup !== "invite" && signup !== "open") p('signup must be "closed", "invite" or "open"');
-    let defaultRole: string | null = null;
-    if (signup === "open") {
-      if (typeof raw.default_role !== "string" || !roles.includes(raw.default_role)) p("default_role must be one of roles when signup is open");
-      else defaultRole = raw.default_role;
-    } else if (raw.default_role !== undefined) {
-      p('default_role is only for signup "open"');
-    }
+  const name = typeof r.name === "string" ? r.name : "";
+  if (!SERVICE_NAME.test(name)) p("name must match [a-z][a-z0-9-]{0,62}");
+  else if (name === AUTH_SERVICE) p(`the name "${AUTH_SERVICE}" is reserved`);
 
-    if (raw.manages_own_members !== undefined && typeof raw.manages_own_members !== "boolean") p("manages_own_members must be true or false");
-    const apiKeyScopes = stringList(raw.api_key_scopes, SCOPE, "api_key_scopes", p, { required: false, nonEmpty: true });
-    const appPasswordScopes = stringList(raw.app_password_scopes, SCOPE, "app_password_scopes", p, { required: false, nonEmpty: true });
+  const roles = stringList(r.roles, ROLE, "roles", p, { required: true, nonEmpty: true });
+  const mfaRoles = stringList(r.mfa_roles, ROLE, "mfa_roles", p, { required: true, nonEmpty: false });
+  for (const role of mfaRoles) if (!roles.includes(role)) p(`mfa_roles has "${role}", which is not one of roles`);
 
-    const clients: Client[] = [];
-    if (!Array.isArray(raw.clients) || raw.clients.length === 0) p("clients must be a non-empty array");
-    else {
-      raw.clients.forEach((c: unknown, j: number) => {
-        const cp = (msg: string) => p(`clients[${j}]: ${msg}`);
-        if (!isObject(c)) return cp("must be an object");
-        for (const key of Object.keys(c)) if (!CLIENT_FIELDS.has(key)) cp(`unknown field "${key}"`);
-        const id = typeof c.id === "string" ? c.id : "";
-        if (!CLIENT_ID.test(id)) cp("id must match [a-z0-9][a-z0-9._-]{0,63}");
-        else if (clientIds.has(id)) cp(`id "${id}" is used by another client`);
-        clientIds.add(id);
-        const type = c.type;
-        if (type !== "confidential" && type !== "public") cp('type must be "confidential" or "public"');
-        const isPublic = type === "public";
-        const redirectUris = uriList(c.redirect_uris, isPublic, "redirect_uris", cp, true);
-        const postLogout = uriList(c.post_logout_redirect_uris, isPublic, "post_logout_redirect_uris", cp, false);
-        clients.push({
-          id,
-          type: isPublic ? "public" : "confidential",
-          service: name,
-          redirectUris,
-          postLogoutRedirectUris: postLogout,
-        });
+  const signup = r.signup;
+  if (signup !== "closed" && signup !== "invite" && signup !== "open") p('signup must be "closed", "invite" or "open"');
+  let defaultRole: string | null = null;
+  if (signup === "open") {
+    if (typeof r.default_role !== "string" || !roles.includes(r.default_role)) p("default_role must be one of roles when signup is open");
+    else defaultRole = r.default_role;
+  } else if (r.default_role !== undefined && r.default_role !== null) {
+    p('default_role is only for signup "open"');
+  }
+
+  if (r.manages_own_members !== undefined && typeof r.manages_own_members !== "boolean") p("manages_own_members must be true or false");
+  const apiKeyScopes = stringList(r.api_key_scopes, SCOPE, "api_key_scopes", p, { required: false, nonEmpty: source === "file" });
+  const appPasswordScopes = stringList(r.app_password_scopes, SCOPE, "app_password_scopes", p, { required: false, nonEmpty: source === "file" });
+
+  const clients: Client[] = [];
+  const ids = new Set<string>();
+  if (!Array.isArray(r.clients) || r.clients.length === 0) p("clients must be a non-empty array");
+  else {
+    r.clients.forEach((c: unknown, j: number) => {
+      const cp = (msg: string) => p(`clients[${j}]: ${msg}`);
+      if (!isObject(c)) return cp("must be an object");
+      for (const key of Object.keys(c)) if (!CLIENT_FIELDS.has(key)) cp(`unknown field "${key}"`);
+      const id = typeof c.id === "string" ? c.id : "";
+      if (!CLIENT_ID.test(id)) cp("id must match [a-z0-9][a-z0-9._-]{0,63}");
+      else if (ids.has(id)) cp(`id "${id}" is used by another client`);
+      ids.add(id);
+      const type = c.type;
+      if (type !== "confidential" && type !== "public") cp('type must be "confidential" or "public"');
+      const isPublic = type === "public";
+      const redirectUris = uriList(c.redirect_uris, isPublic, "redirect_uris", cp, true);
+      const postLogout = uriList(c.post_logout_redirect_uris, isPublic, "post_logout_redirect_uris", cp, false);
+      clients.push({
+        id,
+        type: isPublic ? "public" : "confidential",
+        service: name,
+        redirectUris,
+        postLogoutRedirectUris: postLogout,
       });
-    }
+    });
+  }
 
-    let eventsUrl: string | null = null;
-    if (raw.events_url !== undefined) {
-      const url = typeof raw.events_url === "string" ? parseUrl(raw.events_url) : null;
-      if (!url || (url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password || url.hash) {
-        p("events_url must be an http(s) URL without credentials or a fragment");
-      } else eventsUrl = raw.events_url;
-    }
+  let eventsUrl: string | null = null;
+  if (r.events_url !== undefined && r.events_url !== null) {
+    const url = typeof r.events_url === "string" ? parseUrl(r.events_url) : null;
+    if (!url || (url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password || url.hash) {
+      p("events_url must be an http(s) URL without credentials or a fragment");
+    } else eventsUrl = r.events_url;
+  }
 
-    services.push({
+  return {
+    service: {
       name,
       roles,
       mfaRoles,
       signup: signup === "open" || signup === "invite" ? signup : "closed",
       defaultRole,
-      managesOwnMembers: raw.manages_own_members === true,
+      managesOwnMembers: r.manages_own_members === true,
       apiKeyScopes,
       appPasswordScopes,
       clients,
       eventsUrl,
-    });
-  });
+      source,
+    },
+    problems,
+  };
+}
 
-  return { services: new Services(services), problems };
+// The shape of §6, as the management API answers with it.
+export function serviceJson(s: Service, secrets: ReadonlyMap<string, Date[]> = new Map()) {
+  return {
+    name: s.name,
+    roles: s.roles,
+    mfa_roles: s.mfaRoles,
+    signup: s.signup,
+    default_role: s.defaultRole,
+    manages_own_members: s.managesOwnMembers,
+    api_key_scopes: s.apiKeyScopes,
+    app_password_scopes: s.appPasswordScopes,
+    clients: s.clients.map((c) => ({
+      id: c.id,
+      type: c.type,
+      redirect_uris: c.redirectUris,
+      post_logout_redirect_uris: c.postLogoutRedirectUris,
+      ...(c.type === "confidential" ? { secrets: (secrets.get(c.id) ?? []).map((at) => ({ created_at: at.toISOString() })) } : {}),
+    })),
+    events_url: s.eventsUrl,
+    source: s.source,
+  };
 }
 
 function isObject(v: unknown): v is Record<string, any> {

@@ -67,7 +67,10 @@ export async function deliverDue(app: App, fetchFn: typeof fetch = fetch, limit 
       ORDER BY id LIMIT ${limit}
       FOR UPDATE SKIP LOCKED)
     RETURNING id, service, token, attempts`;
-  await Promise.all(rows.map((row) => deliverOne(app, fetchFn, row)));
+  if (rows.length === 0) return 0;
+  // Each to its service's events_url as it is now.
+  const current = await app.prepare();
+  await Promise.all(rows.map((row) => deliverOne(current, fetchFn, row)));
   return rows.length;
 }
 

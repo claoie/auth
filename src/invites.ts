@@ -6,6 +6,7 @@ import { newId, randomToken, sha256 } from "./crypto";
 import { inviteEmail } from "./emails";
 import { emit } from "./events";
 import { HttpError } from "./http";
+import { lockService } from "./registry";
 import type { Service } from "./services";
 import type { After } from "./tx";
 
@@ -44,11 +45,12 @@ export async function createInvite(
   i: { email: string; service: Service; role: string; actor: string; ip: string | null },
   after: After,
 ): Promise<InviteRow> {
-  if (i.service.signup === "closed") {
-    throw new HttpError(409, "conflict", `${i.service.name} is closed to sign-up, so it takes no invitations; an admin grants access to existing accounts.`);
+  const service = await lockService(tx, i.service);
+  if (service.signup === "closed") {
+    throw new HttpError(409, "conflict", `${service.name} is closed to sign-up, so it takes no invitations; an admin grants access to existing accounts.`);
   }
-  if (!i.service.roles.includes(i.role)) {
-    throw new HttpError(400, "invalid_request", `"${i.role}" is not a role of ${i.service.name}: use ${i.service.roles.join(", ")}.`);
+  if (!service.roles.includes(i.role)) {
+    throw new HttpError(400, "invalid_request", `"${i.role}" is not a role of ${service.name}: use ${service.roles.join(", ")}.`);
   }
   const token = randomToken();
   const [row] = await tx`

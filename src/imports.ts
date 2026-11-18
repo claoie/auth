@@ -3,6 +3,7 @@ import type { App } from "./app";
 import { audit } from "./audit";
 import { fromBase64url, ID_PATTERN, newId } from "./crypto";
 import { isEmailAddress } from "./mail";
+import { lockService } from "./registry";
 import type { Service } from "./services";
 import { issueToken } from "./tokens";
 import { transaction } from "./tx";
@@ -146,7 +147,7 @@ export async function importUsers(app: App, text: string, opts: { dryRun: boolea
       else {
         for (const [serviceName, role] of Object.entries(v.access as Json)) {
           const service = app.services.get(serviceName);
-          if (!service) p(`access names a service the services file doesn't have`);
+          if (!service) p(`access names a service auth doesn't have`);
           else if (typeof role !== "string" || !service.roles.includes(role)) p(`access gives ${service.name} a role it doesn't declare`);
           else grants.push({ service, role });
         }
@@ -274,6 +275,8 @@ export async function importApiKeys(app: App, service: Service, text: string, op
   if (problems.length > 0 || opts.dryRun) return { problems, rows: [] };
 
   const rows = await writeAll(() => app.sql.begin(async (tx) => {
+    // A registered service deleted since the checks takes nothing.
+    await lockService(tx, service);
     const done: ImportedKey[] = [];
     for (const k of checked) {
       const id = newId("key");

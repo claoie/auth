@@ -5,6 +5,7 @@ import { databasePing } from "./db";
 import { KeyStore } from "./keys";
 import type { MailMessage, Mailer } from "./mail";
 import { Hasher, isBreached, Semaphore } from "./passwords";
+import { ServiceRegistry } from "./registry";
 import type { ServerDeps } from "./server";
 import type { Services } from "./services";
 
@@ -12,7 +13,12 @@ import type { Services } from "./services";
 // substitute fakes without patching modules.
 export interface App extends ServerDeps {
   config: Config;
+  // The services as this request, or this pass of a job, loaded them; at
+  // start, the file's only. prepare() gives a copy of the app with them
+  // current (registry.ts).
   services: Services;
+  registry: ServiceRegistry;
+  prepare(): Promise<App>;
   sql: SQL;
   crypt: Encrypter;
   keys: KeyStore;
@@ -39,9 +45,14 @@ export function createApp(config: Config, sql: SQL, mailer: Mailer, overrides: A
   const fetchFn = overrides.fetch ?? fetch;
   const crypt = new Encrypter(config.encryptionKey, config.decryptionKeys);
   const queue = mailQueue(mailer, log);
-  return {
+  const registry = new ServiceRegistry(sql, config.services, log);
+  const app: App = {
     config,
     services: config.services,
+    registry,
+    async prepare() {
+      return { ...app, services: await registry.current() };
+    },
     sql,
     crypt,
     keys: new KeyStore(sql, crypt),
@@ -53,6 +64,7 @@ export function createApp(config: Config, sql: SQL, mailer: Mailer, overrides: A
     pingDatabase: databasePing(sql, 2000),
     log,
   };
+  return app;
 }
 
 const MAX_QUEUED_EMAILS = 200;

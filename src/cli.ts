@@ -144,8 +144,9 @@ export async function runCli(argv: string[], ctx: CliContext): Promise<number> {
     return 2;
   }
   const [group, command, target] = args.positional;
-  const { app } = ctx;
   try {
+    // The services as they are now, the registered ones included.
+    const app = group === "user" || group === "client" || group === "import" ? await ctx.app.prepare() : ctx.app;
     if (group === "user" && command === "create") {
       const username = checkUsername(one(args, "username"));
       const name = checkName(one(args, "name"));
@@ -214,7 +215,7 @@ export async function runCli(argv: string[], ctx: CliContext): Promise<number> {
 
     if (group === "client" && (command === "secret" || command === "retire-old-secrets")) {
       const client = target ? app.services.client(target) : undefined;
-      if (!client || client.type !== "confidential") throw new UsageError("name a confidential client from the services file");
+      if (!client || client.type !== "confidential") throw new UsageError("name a confidential client");
       if (command === "secret") {
         const secret = await transaction(app.sql, async (tx) => {
           const s = await rotateClientSecret(tx, client.id);
@@ -272,7 +273,7 @@ export async function runCli(argv: string[], ctx: CliContext): Promise<number> {
       } else {
         const name = one(args, "service");
         const service = name ? app.services.get(name) : undefined;
-        if (!service) throw new UsageError("--service must name a service from the services file");
+        if (!service) throw new UsageError("--service must name a service");
         const result = await importApiKeys(app, service, text, { dryRun });
         problems = result.problems;
         count = result.rows.length;

@@ -206,9 +206,9 @@ describe.skipIf(!TEST_DATABASE_URL)("operations", () => {
     try {
       const applied: string[] = [];
       await Promise.all(copies.map((c) => migrate(c, (line) => applied.push(line))));
-      expect(applied).toEqual(["migration 0001_initial applied"]);
-      const rows = await copies[0]!`SELECT version FROM schema_migrations`;
-      expect(rows.map((r: { version: string }) => r.version)).toEqual(["0001_initial"]);
+      expect(applied).toEqual(["migration 0001_initial applied", "migration 0002_services applied"]);
+      const rows = await copies[0]!`SELECT version FROM schema_migrations ORDER BY version`;
+      expect(rows.map((r: { version: string }) => r.version)).toEqual(["0001_initial", "0002_services"]);
     } finally {
       await Promise.all(copies.map((c) => c.close()));
       await admin.unsafe(`DROP SCHEMA ${schema} CASCADE`);

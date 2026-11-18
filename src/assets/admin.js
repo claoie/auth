@@ -811,57 +811,427 @@
 
   // ----------------------------------------------------------- services
 
-  async function showServices() {
-    view.append(el("h2", { class: "sr-only" }, "Services"), el("p", { class: "muted" }, "From the deployment's services file; it changes with a restart."));
+  // Services registered here live in auth's database; the services file's
+  // are read-only here (docs/DESIGN.md §6.2).
+
+  async function reloadServices() {
+    var data = await api("GET", "/v1/services");
+    services = data.items;
+    return data;
+  }
+
+  function words(value) {
+    return value.split(/[\s,]+/).filter(Boolean);
+  }
+
+  function lines(value) {
+    return value
+      .split("\n")
+      .map(function (l) {
+        return l.trim();
+      })
+      .filter(Boolean);
+  }
+
+  // Redraws the tab, keeping what was just shown once (a secret) on top.
+  function redrawServices(top) {
+    clear(view);
+    return showServices(top).catch(function (e) {
+      if (e instanceof ApiError && (e.status === 401 || e.code === "reauth_required")) return;
+      view.append(flash("error", (e && e.message) || "Couldn't load this."));
+    });
+  }
+
+  // What the app is configured with, in the names of client/auth-client.ts's
+  // example (docs/DESIGN.md §7.6).
+  function settingsBox(service, client, secret) {
+    var settings = [
+      "AUTH_ISSUER=" + location.origin,
+      "AUTH_CLIENT_ID=" + client.id,
+      secret ? "AUTH_CLIENT_SECRET=" + secret : null,
+      client.redirect_uris[0] ? "AUTH_REDIRECT_URI=" + client.redirect_uris[0] : null,
+      client.id !== service.name ? "AUTH_AUDIENCE=" + service.name : null,
+    ].filter(Boolean);
+    var b = secretBox("Settings for " + client.id, settings.join("\n"));
+    b.querySelector(".hint").textContent =
+      (secret
+        ? "The client secret is shown only now: put it in the app's environment before you leave this page."
+        : "A public client has no secret: the app proves itself with PKCE.") + " The names are those the example client uses; use whichever the app reads.";
+    return b;
+  }
+
+  async function showServices(top) {
+    var data = await reloadServices();
+    view.append(
+      el("h2", { class: "sr-only" }, "Services"),
+      el("p", { class: "muted" }, "Apps reach auth at the issuer ", el("code", {}, location.origin), ". Register each app as a service, then make its client's secret to get the settings the app needs."),
+    );
+    if (top) append(view, top);
+    view.append(el("details", { class: "box" }, el("summary", {}, "Register a service"), serviceForm(null)));
+    var heldNames = data.held.map(function (h) {
+      return h.name;
+    });
     var grid = el("div", { class: "services-grid" });
-    services.forEach(function (s) {
-      var signup = s.signup === "open" ? "ok" : s.signup === "invite" ? "accent" : null;
-      grid.append(
+    data.items.forEach(function (s) {
+      grid.append(serviceCard(s, heldNames.indexOf(s.name) >= 0));
+    });
+    view.append(grid);
+    if (data.held.length) {
+      view.append(
+        el("h3", {}, "Held"),
+        el("p", { class: "muted" }, "Registered here, but not in effect: the services file declares the name or one of the client ids. Each takes over once the file no longer does."),
+      );
+      var heldGrid = el("div", { class: "services-grid" });
+      data.held.forEach(function (s) {
+        heldGrid.append(serviceCard(s, false, true));
+      });
+      view.append(heldGrid);
+    }
+  }
+
+  function secretsLine(c) {
+    var live = c.secrets || [];
+    if (live.length === 0) return "No secret yet.";
+    if (live.length === 1) return "Secret made " + when(live[0].created_at) + ".";
+    return live.length + " secrets work: the newest made " + when(live[0].created_at) + ", the older one " + when(live[live.length - 1].created_at) + ".";
+  }
+
+  function serviceCard(s, hasHeldCopy, held) {
+    var out = status();
+    var signup = s.signup === "open" ? "ok" : s.signup === "invite" ? "accent" : null;
+    var source = s.source === "database" ? (held ? tag("held", "attention") : tag("admin page")) : s.source === "file" ? tag("services file") : tag("built in");
+    var clients = s.clients.map(function (c) {
+      var actions = null;
+      if (c.type === "confidential" && !held) {
+        var make = el("button", { type: "button", class: "secondary sm" }, icon("key"), "New secret");
+        make.addEventListener("click", function () {
+          var live = (c.secrets || []).length;
+          if (live > 0 && !confirm("Make a new secret for " + c.id + "? The newest current one keeps working until you retire it; " + (live > 1 ? "the oldest stops now." : "move the app to the new one, then retire the old."))) return;
+          act(make, out, async function () {
+            var r = await api("POST", "/v1/clients/" + encodeURIComponent(c.id) + "/secrets");
+            await redrawServices(settingsBox(s, c, r.secret));
+          });
+        });
+        var retire = null;
+        if ((c.secrets || []).length > 1) {
+          retire = el("button", { type: "button", class: "danger sm" }, "Retire older");
+          retire.addEventListener("click", function () {
+            if (!confirm("Retire " + c.id + "'s older secret? An app still using it stops signing people in.")) return;
+            act(retire, out, async function () {
+              await api("DELETE", "/v1/clients/" + encodeURIComponent(c.id) + "/old-secrets");
+              await redrawServices(flash("success", "Only the newest secret of " + c.id + " works now."));
+            });
+          });
+        }
+        actions = el("div", { class: "actions" }, make, retire);
+      }
+      return el(
+        "li",
+        {},
         el(
           "div",
-          { class: "box" },
-          el(
-            "div",
-            { class: "box-header" },
-            el("h3", { class: "box-title" }, s.name),
-            el("span", { class: "tags" }, tag("sign-up " + s.signup, signup), s.manages_own_members ? tag("manages own members") : null),
-          ),
-          el(
-            "dl",
-            { class: "props" },
-            el("dt", {}, "Roles"),
-            el("dd", {}, tags(s.roles), el("p", { class: "hint" }, "Lowest first.")),
-            el("dt", {}, "Need MFA"),
-            el("dd", {}, s.mfa_roles.length ? tags(s.mfa_roles, "attention") : "none"),
-            s.default_role ? [el("dt", {}, "Default role"), el("dd", {}, tag(s.default_role))] : null,
-            s.app_password_scopes.length ? [el("dt", {}, "App password scopes"), el("dd", {}, tags(s.app_password_scopes))] : null,
-            s.api_key_scopes.length ? [el("dt", {}, "API key scopes"), el("dd", {}, tags(s.api_key_scopes))] : null,
-            s.events_url ? [el("dt", {}, "Events"), el("dd", {}, code(s.events_url))] : null,
-          ),
-          s.clients.length
+          { class: "row-main" },
+          el("div", { class: "row-title" }, code(c.id), tag(c.type)),
+          c.redirect_uris.map(function (uri) {
+            return el("p", { class: "hint" }, el("code", {}, uri));
+          }),
+          c.post_logout_redirect_uris.length
             ? el(
-                "ul",
-                { class: "rows" },
-                s.clients.map(function (c) {
-                  return el(
-                    "li",
-                    {},
-                    el(
-                      "div",
-                      { class: "row-main" },
-                      el("div", { class: "row-title" }, code(c.id), tag(c.type)),
-                      c.redirect_uris.map(function (uri) {
-                        return el("p", { class: "hint" }, el("code", {}, uri));
-                      }),
-                    ),
-                  );
+                "p",
+                { class: "hint" },
+                "After sign-out: ",
+                c.post_logout_redirect_uris.map(function (uri, i) {
+                  return [i ? ", " : null, el("code", {}, uri)];
                 }),
               )
             : null,
+          c.type === "confidential" && !held ? el("p", { class: "hint" }, secretsLine(c)) : null,
         ),
+        actions,
       );
     });
-    view.append(grid);
+
+    var footer = null;
+    if (s.source === "database" && !held) {
+      var edit = el("button", { type: "button", class: "secondary sm" }, "Edit");
+      edit.addEventListener("click", function () {
+        showServiceEditor(s);
+      });
+      var del = el("button", { type: "button", class: "danger sm" }, "Delete");
+      del.addEventListener("click", function () {
+        var typed = prompt(
+          "Delete " + s.name + "? Everyone's role on it, its invitations, app passwords, API keys and client secrets go with it, and its app's sign-ins stop. Type " + s.name + " to confirm.",
+        );
+        if (typed === null) return;
+        if (typed.trim() !== s.name) return say(out, "Nothing deleted: the name didn't match.");
+        act(del, out, async function () {
+          await api("DELETE", "/v1/services/" + encodeURIComponent(s.name));
+          await redrawServices(flash("success", s.name + " is deleted."));
+        });
+      });
+      footer = el("div", { class: "box-footer actions" }, edit, del, out);
+    } else if (held) {
+      var drop = el("button", { type: "button", class: "danger sm" }, "Delete the copy");
+      drop.addEventListener("click", function () {
+        if (!confirm("Delete the held copy of " + s.name + "? The services file's stays in effect, with everything granted on it.")) return;
+        act(drop, out, async function () {
+          await api("DELETE", "/v1/services/" + encodeURIComponent(s.name));
+          await redrawServices(flash("success", "The held copy of " + s.name + " is deleted."));
+        });
+      });
+      footer = el("div", { class: "box-footer actions" }, drop, out);
+    } else if (s.source === "file") {
+      if (hasHeldCopy) {
+        footer = el("div", { class: "box-footer" }, el("p", { class: "hint" }, "A copy is held here. Remove " + s.name + " from the services file and restart auth, and the copy takes over."), out);
+      } else {
+        var copy = el("button", { type: "button", class: "secondary sm" }, "Copy to the admin page");
+        copy.addEventListener("click", function () {
+          act(copy, out, async function () {
+            await api("POST", "/v1/services", definitionOf(s));
+            await redrawServices(
+              flash("success", "A copy of " + s.name + " is held. Remove it from the services file and restart auth: the copy takes over, and everything granted on it carries over."),
+            );
+          });
+        });
+        footer = el(
+          "div",
+          { class: "box-footer" },
+          el("div", { class: "actions" }, copy),
+          el("p", { class: "hint" }, "To manage it here: copy it, then remove it from the services file and restart. Nobody signs in again."),
+          out,
+        );
+      }
+    } else {
+      footer = out;
+    }
+
+    return el(
+      "div",
+      { class: "box" },
+      el(
+        "div",
+        { class: "box-header" },
+        el("h3", { class: "box-title" }, s.name),
+        el("span", { class: "tags" }, source, tag("sign-up " + s.signup, signup), s.manages_own_members ? tag("manages own members") : null),
+      ),
+      el(
+        "dl",
+        { class: "props" },
+        el("dt", {}, "Roles"),
+        el("dd", {}, tags(s.roles), el("p", { class: "hint" }, "Lowest first.")),
+        el("dt", {}, "Need MFA"),
+        el("dd", {}, s.mfa_roles.length ? tags(s.mfa_roles, "attention") : "none"),
+        s.default_role ? [el("dt", {}, "Default role"), el("dd", {}, tag(s.default_role))] : null,
+        s.app_password_scopes.length ? [el("dt", {}, "App password scopes"), el("dd", {}, tags(s.app_password_scopes))] : null,
+        s.api_key_scopes.length ? [el("dt", {}, "API key scopes"), el("dd", {}, tags(s.api_key_scopes))] : null,
+        s.events_url ? [el("dt", {}, "Events"), el("dd", {}, code(s.events_url))] : null,
+      ),
+      clients.length ? el("ul", { class: "rows" }, clients) : null,
+      footer,
+    );
+  }
+
+  // The fields of §6, as a registration takes them.
+  function definitionOf(s) {
+    var body = {
+      name: s.name,
+      roles: s.roles,
+      mfa_roles: s.mfa_roles,
+      signup: s.signup,
+      manages_own_members: s.manages_own_members,
+      api_key_scopes: s.api_key_scopes,
+      app_password_scopes: s.app_password_scopes,
+      clients: s.clients.map(function (c) {
+        return { id: c.id, type: c.type, redirect_uris: c.redirect_uris, post_logout_redirect_uris: c.post_logout_redirect_uris };
+      }),
+    };
+    if (s.signup === "open") body.default_role = s.default_role;
+    if (s.events_url) body.events_url = s.events_url;
+    return body;
+  }
+
+  function showServiceEditor(s) {
+    clear(view);
+    var back = el("button", { type: "button", class: "secondary sm" }, icon("back"), "All services");
+    back.addEventListener("click", function () {
+      redrawServices();
+    });
+    view.append(
+      el("div", { class: "actions" }, back),
+      el("div", { class: "page-head" }, el("div", {}, el("h2", {}, "Edit ", s.name), el("p", {}, "A change reaches every copy of auth at its next request."))),
+      box(null, serviceForm(s)),
+    );
+  }
+
+  // Registers a service, or changes one (`existing`). A client's id and type
+  // never change once registered.
+  function serviceForm(existing) {
+    var out = status();
+    var name = existing
+      ? null
+      : el("input", { required: true, maxlength: "63", pattern: "[a-z][a-z0-9\\-]{0,62}", autocomplete: "off", placeholder: "wiki" });
+    var roles = el("input", { required: true, autocomplete: "off", value: existing ? existing.roles.join(" ") : "member admin" });
+    var mfa = el("fieldset", { class: "checks" });
+    var mfaPicked = existing ? existing.mfa_roles.slice() : ["admin"];
+    var signup = el(
+      "select",
+      {},
+      el("option", { value: "invite", selected: !existing || existing.signup === "invite" }, "By invitation, or granted by an admin"),
+      el("option", { value: "closed", selected: existing && existing.signup === "closed" }, "Closed: granted by an admin only"),
+      el("option", { value: "open", selected: existing && existing.signup === "open" }, "Open: anyone may create an account"),
+    );
+    var defaultRole = el("select", {});
+    var defaultLabel = el("label", {}, "Role an open sign-up gets", defaultRole);
+    var manages = el("input", { type: "checkbox", checked: !!(existing && existing.manages_own_members) });
+    var apw = el("input", { autocomplete: "off", placeholder: "imap smtp", value: existing ? existing.app_password_scopes.join(" ") : "" });
+    var keys = el("input", { autocomplete: "off", placeholder: "wiki:read wiki:write", value: existing ? existing.api_key_scopes.join(" ") : "" });
+    var events = el("input", { type: "url", autocomplete: "off", placeholder: "https://wiki.example.com/auth/events", value: existing && existing.events_url ? existing.events_url : "" });
+    var clientList = el("div", { class: "client-list" });
+    var addClient = el("button", { type: "button", class: "secondary sm" }, "Add a client");
+    var clientForms = [];
+
+    function drawRoleChoices() {
+      var list = words(roles.value);
+      Array.prototype.forEach.call(mfa.querySelectorAll("input"), function (i) {
+        var at = mfaPicked.indexOf(i.value);
+        if (i.checked && at < 0) mfaPicked.push(i.value);
+        if (!i.checked && at >= 0) mfaPicked.splice(at, 1);
+      });
+      clear(mfa);
+      mfa.append(el("legend", {}, "Roles that need a second factor"));
+      list.forEach(function (r) {
+        mfa.append(el("label", { class: "check" }, el("input", { type: "checkbox", value: r, checked: mfaPicked.indexOf(r) >= 0 }), r));
+      });
+      if (!list.length) mfa.append(el("p", { class: "hint" }, "Name the roles first."));
+      var current = defaultRole.value || (existing && existing.default_role) || list[0];
+      clear(defaultRole);
+      append(defaultRole, options(list, current));
+      defaultLabel.hidden = signup.value !== "open";
+    }
+
+    function clientFields(c) {
+      var id = el("input", { required: true, maxlength: "64", pattern: "[a-z0-9][a-z0-9._\\-]{0,63}", autocomplete: "off", value: c ? c.id : "", readonly: !!c });
+      var type = el(
+        "select",
+        { disabled: !!c },
+        el("option", { value: "confidential", selected: !c || c.type === "confidential" }, "Confidential: a web app's server, with a secret"),
+        el("option", { value: "public", selected: c && c.type === "public" }, "Public: a native app, with PKCE only"),
+      );
+      var redirects = el("textarea", { required: true, rows: "2", autocomplete: "off", placeholder: "https://wiki.example.com/auth/callback" });
+      redirects.value = c ? c.redirect_uris.join("\n") : "";
+      var after = el("textarea", { rows: "1", autocomplete: "off", placeholder: "https://wiki.example.com/" });
+      after.value = c ? c.post_logout_redirect_uris.join("\n") : "";
+      var remove = el("button", { type: "button", class: "danger sm" }, "Remove");
+      var fields = {
+        node: el(
+          "fieldset",
+          { class: "client" },
+          el("legend", {}, c ? "Client " + c.id : "New client"),
+          el("label", {}, "Client id", id),
+          c ? el("p", { class: "hint" }, "A client's id and type never change.") : null,
+          el("label", {}, "Type", type),
+          el("label", {}, "Redirect URIs, one per line", redirects),
+          el("p", { class: "hint" }, "Where auth sends people back after sign-in: https, http only on localhost, or a native app's own scheme."),
+          el("label", {}, "After sign-out, one per line (optional)", after),
+          el("div", { class: "actions" }, remove),
+        ),
+        id: id,
+        existing: !!c,
+        value: function () {
+          return { id: id.value.trim(), type: type.value, redirect_uris: lines(redirects.value), post_logout_redirect_uris: lines(after.value) };
+        },
+      };
+      remove.addEventListener("click", function () {
+        if (clientForms.length === 1) return say(out, "A service needs at least one client.");
+        if (c && !confirm("Remove the client " + c.id + "? Its secrets and refresh tokens stop working when you save.")) return;
+        clientForms.splice(clientForms.indexOf(fields), 1);
+        fields.node.remove();
+      });
+      clientForms.push(fields);
+      clientList.append(fields.node);
+      return fields;
+    }
+
+    (existing ? existing.clients : [null]).forEach(clientFields);
+    // A new service's first client takes its name, until it is given another.
+    if (!existing) {
+      var first = clientForms[0];
+      var followed = true;
+      first.id.addEventListener("input", function () {
+        followed = false;
+      });
+      name.addEventListener("input", function () {
+        if (followed) first.id.value = name.value;
+      });
+    }
+    addClient.addEventListener("click", function () {
+      clientFields(null).id.focus();
+    });
+    roles.addEventListener("input", drawRoleChoices);
+    signup.addEventListener("change", drawRoleChoices);
+    drawRoleChoices();
+
+    var submit = el("button", { type: "submit" }, existing ? "Save changes" : "Register");
+    var form = el(
+      "form",
+      { class: "service-form" },
+      name ? [el("label", {}, "Name", name), el("p", { class: "hint" }, "The audience in its tokens: a–z, 0–9 and '-'. It can never change.")] : null,
+      el("label", {}, "Roles", roles),
+      el("p", { class: "hint" }, "Lowest first, separated by spaces. Each person holds at most one."),
+      mfa,
+      el("label", {}, "Sign-up", signup),
+      defaultLabel,
+      el("label", { class: "check" }, manages, "The app invites people and changes their roles itself"),
+      el("label", {}, "App password scopes (optional)", apw),
+      el("p", { class: "hint" }, "For protocols that can only carry a password, such as IMAP and SMTP."),
+      el("label", {}, "API key scopes (optional)", keys),
+      el("label", {}, "Events URL (optional)", events),
+      el("p", { class: "hint" }, "Where auth posts sign-outs and access changes, so the app can close open connections at once."),
+      el("fieldset", {}, el("legend", {}, "Clients"), clientList, el("div", { class: "actions" }, addClient)),
+      el("div", { class: "actions" }, submit),
+      out,
+    );
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      act(submit, out, async function () {
+        var list = words(roles.value);
+        var body = {
+          name: existing ? existing.name : name.value.trim(),
+          roles: list,
+          mfa_roles: Array.prototype.map.call(mfa.querySelectorAll("input:checked"), function (i) {
+            return i.value;
+          }),
+          signup: signup.value,
+          manages_own_members: manages.checked,
+          app_password_scopes: words(apw.value),
+          api_key_scopes: words(keys.value),
+          clients: clientForms.map(function (f) {
+            return f.value();
+          }),
+        };
+        if (signup.value === "open") body.default_role = defaultRole.value;
+        if (events.value.trim()) body.events_url = events.value.trim();
+        if (existing) {
+          await api("PUT", "/v1/services/" + encodeURIComponent(existing.name), body);
+          return redrawServices(flash("success", existing.name + " is saved. Every copy of auth uses it from its next request."));
+        }
+        var s = await api("POST", "/v1/services", body);
+        if (s.held) return redrawServices(flash("notice", s.name + " is held: the services file declares it. It takes over once the file no longer does."));
+        // Each confidential client's first secret, shown with its settings.
+        var shown = [flash("success", s.name + " is registered.")];
+        for (var i = 0; i < s.clients.length; i++) {
+          var c = s.clients[i];
+          if (c.type !== "confidential") {
+            shown.push(settingsBox(s, c, null));
+            continue;
+          }
+          var r = await api("POST", "/v1/clients/" + encodeURIComponent(c.id) + "/secrets");
+          shown.push(settingsBox(s, c, r.secret));
+        }
+        return redrawServices(el("div", { class: "stack" }, shown));
+      });
+    });
+    return form;
   }
 
   // -------------------------------------------------------------- audit
@@ -925,7 +1295,7 @@
   (async function start() {
     clear(root);
     root.append(
-      el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "Administration"), el("p", {}, "Users, their access to each service, invitations and the audit log."))),
+      el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "Administration"), el("p", {}, "Users, the services they use and their roles there, invitations and the audit log."))),
       tabs,
       view,
     );

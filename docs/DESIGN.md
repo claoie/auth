@@ -1,6 +1,6 @@
 # Auth service: design
 
-Status: built through phase 3 (§13); phase 4 is designed, not built. Scope: an identity and access service that anyone can deploy in front of the apps they run. It covers who can sign in, how, and with what access to each app.
+Status: built through phase 3 (§13), with services registered on the admin page (§6.2); phase 4 is designed, not built. Scope: an identity and access service that anyone can deploy in front of the apps they run. It covers who can sign in, how, and with what access to each app.
 
 ## 1. Summary
 
@@ -235,7 +235,7 @@ The fields of a service:
 | `signup` | yes | How people get access without an admin granting it to them one by one. `closed`: they don't. Access comes only from a grant by an `auth:admin`, or by the service's own client when `manages_own_members` is set, and only to existing accounts; no invitations. `invite`: also anyone holding an invitation (§7.5) creates their own account, or uses an existing one, and gets the invited role. `open`: also anyone may create an account on auth's sign-up page or through a platform sign-in (§12.3), and a signed-in user without an access row gets `default_role` when they sign in to the service. So on an open service a role can be changed but not removed: removal answers `409 conflict`, since the next sign-in would grant `default_role` again, and disabling the user (rule 5) is how to keep them out. |
 | `default_role` | with `signup: "open"` | The role an open sign-up receives; one of `roles`. |
 | `manages_own_members` | no (`false`) | The service's own client may call the ★ endpoints of §7.5 for this service. |
-| `api_key_scopes`, `app_password_scopes` | no (none) | The scopes API keys and app passwords for this service may carry. A service with neither gets neither kind of credential. |
+| `api_key_scopes`, `app_password_scopes` | no (none) | The scopes API keys and app passwords for this service may carry. A service with neither gets neither kind of credential. A registration may give `[]` for none, as `GET /v1/services` writes it; the file leaves the field out. |
 | `clients` | yes | One or more, each with an `id` unique across every service, a `type` (`confidential` or `public`), `redirect_uris` and optional `post_logout_redirect_uris`. Redirect URIs are absolute: `https`, `http` only for a loopback host (`localhost`, `127.0.0.1` or `[::1]`, RFC 8252 §7.3), or a private-use scheme for a public client (RFC 8252). A registered client's `id` and `type` never change (§6.2). |
 | `events_url` | no | Where §7.4's events go. A service without one relies on the pull (§7.1), and on reading its pending invites (§12.6). |
 

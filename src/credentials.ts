@@ -4,6 +4,7 @@ import { audit } from "./audit";
 import { base32, base64url, newId, random, sha256 } from "./crypto";
 import { emit } from "./events";
 import { HttpError } from "./http";
+import { lockService } from "./registry";
 import type { Service } from "./services";
 
 // App passwords and API keys (docs/DESIGN.md §7.3, §9.1, §12.4, §12.5). Each
@@ -74,7 +75,7 @@ export interface NewCredential {
 }
 
 export async function createCredential(tx: SQL, app: App, c: NewCredential): Promise<{ row: CredentialRow; secret: string }> {
-  const declared = scopesOf(c.service, c.kind);
+  const declared = scopesOf(await lockService(tx, c.service), c.kind);
   const label = c.kind === "app_password" ? "app passwords" : "API keys";
   if (declared.length === 0) throw new HttpError(400, "invalid_request", `${c.service.name} takes no ${label}.`);
   if (!Array.isArray(c.scopes) || c.scopes.length === 0 || c.scopes.some((s) => typeof s !== "string" || !declared.includes(s))) {

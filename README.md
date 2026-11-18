@@ -41,7 +41,8 @@ Phases 1 to 3 of [`docs/DESIGN.md`](docs/DESIGN.md) §13 are built:
   (rotated for public clients), revocation, introspection of app passwords
   and API keys, userinfo, logout, discovery and JWKS, with Ed25519 keys that
   rotate every 90 days.
-- **Access:** the services file, one role per user per service, invitations,
+- **Access:** services registered on the admin page or declared in a
+  services file, one role per user per service, invitations,
   bot users, and the management API with its scoped calls for apps that
   manage their own members.
 - **Events** to apps through a Postgres outbox; the audit log; alerts; rate
@@ -66,7 +67,7 @@ deployment.
 | `PORT` | no | `3000` | HTTP listen port |
 | `DATABASE_URL` | yes | — | Postgres connection string for the auth database |
 | `ISSUER_URL` | yes | — | auth's own origin, the tokens' `iss` |
-| `SERVICES_FILE` | yes | — | Path to the services file (`docs/DESIGN.md` §6) |
+| `SERVICES_FILE` | no | none | Path to a services file, whose services are read-only on the admin page (`docs/DESIGN.md` §6.2) |
 | `AUTH_ENCRYPTION_KEY` | yes | — | 32 bytes, base64, optionally as `v<N>:<base64>`; encrypts signing keys and TOTP secrets |
 | `AUTH_DECRYPTION_KEYS` | during a key rotation | — | Other keys, `v<N>:<base64>`, comma-separated, that only decrypt |
 | `API_KEY_PREFIX` | when a service has `api_key_scopes` | — | Prefix of API keys, for secret scanners |
@@ -85,7 +86,7 @@ Postgres 16.
 
 ```sh
 bun install
-cp .env.example .env    # then set DATABASE_URL, AUTH_ENCRYPTION_KEY, SERVICES_FILE
+cp .env.example .env    # then set DATABASE_URL and AUTH_ENCRYPTION_KEY
 bun run dev             # restarts on change
 bun run typecheck
 TEST_DATABASE_URL=postgres://auth:auth@localhost:5432/auth bun test
@@ -96,7 +97,7 @@ The first admin comes from the CLI, which prints an activation link:
 
 ```sh
 bun cli.ts user create --username alice --email alice@example.com --access auth:admin --print-link
-bun cli.ts client secret wiki    # a confidential client's secret, printed once
+bun cli.ts client secret wiki    # a confidential client's secret, printed once (the admin page makes them too)
 bun cli.ts import users users.jsonl --dry-run
 bun cli.ts help
 ```

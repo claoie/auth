@@ -50,12 +50,17 @@ describe("loadConfig", () => {
     expect(load({ DATABASE_URL: url }).databaseUrl).toBe(url);
   });
 
+  test("without SERVICES_FILE, the services are auth's own and those registered on the admin page", () => {
+    const c = load({ SERVICES_FILE: undefined, API_KEY_PREFIX: undefined });
+    expect(c.services.all().map((s) => [s.name, s.source])).toEqual([["auth", "builtin"]]);
+    expect(c.apiKeyPrefix).toBeNull();
+  });
+
   test("lists every problem at once", () => {
     expect(problems({ PORT: "http" })).toEqual([
       'PORT must be a whole number from 1 to 65535, not "http"',
       "DATABASE_URL is required",
       "ISSUER_URL is required",
-      "SERVICES_FILE is required",
       "AUTH_ENCRYPTION_KEY is required",
       "SMTP_URL is required",
       "EMAIL_FROM is required",
