@@ -9,6 +9,7 @@
   var csrfMeta = document.querySelector('meta[name="csrf-token"]');
   var csrf = csrfMeta ? csrfMeta.getAttribute("content") || "" : "";
   var services = [];
+  var me = null;
 
   // ------------------------------------------------------------ helpers
 
@@ -133,8 +134,10 @@
   }
   ApiError.prototype = Object.create(Error.prototype);
 
-  function goToLogin(reauth) {
-    var params = new URLSearchParams({ return_to: location.pathname + location.hash });
+  // `resume` marks the way back, so the page knows to carry on with the
+  // change noted before leaving (signInAgain).
+  function goToLogin(reauth, resume) {
+    var params = new URLSearchParams({ return_to: location.pathname + (resume ? "?resume=1" : "") + location.hash });
     if (reauth) params.set("reauth", "1");
     location.assign("/login?" + params.toString());
   }
@@ -161,11 +164,112 @@
       goToLogin(false);
       throw new ApiError(401, code, "Sign in first.");
     }
-    if (res.status === 403 && code === "reauth_required") {
-      goToLogin(true);
-      throw new ApiError(403, code, "Sign in again to make this change.");
-    }
+    // reauth_required is act's to handle: it knows which change asked.
     throw new ApiError(res.status, code, (data && data.error_description) || "The request failed (" + res.status + ").");
+  }
+
+  // ------------------------------------------ signing in again, and on
+
+  // A change that needs a recent sign-in (§7.5) sends the browser to sign in
+  // again, and the sign-in brings it back here, to the tab or user's page the
+  // hash names (go). The change, a form or button marked data-resume,
+  // is noted in this tab for the trip and starts again once the page is
+  // back, so it carries on instead of being lost. Its form's values go with
+  // it, but never a password: a form with one waits for it to be typed
+  // again. It carries on only for the same person, within RESUME_MS, and
+  // once: if it still needs a sign-in, it says why instead.
+  var RESUME = "auth.resume";
+  var RESUME_MS = 10 * 60 * 1000;
+  var resuming = false;
+
+  function fieldsOf(node) {
+    if (node.tagName !== "FORM") return [];
+    return Array.prototype.filter.call(node.elements, function (f) {
+      return f.tagName === "INPUT" || f.tagName === "SELECT" || f.tagName === "TEXTAREA";
+    });
+  }
+
+  function fieldKind(f) {
+    return f.tagName + ":" + f.type + (f.type === "checkbox" ? ":" + f.value : "");
+  }
+
+  function signInAgain(trigger) {
+    var noted = false;
+    if (trigger && me) {
+      try {
+        sessionStorage.setItem(
+          RESUME,
+          JSON.stringify({
+            page: location.pathname,
+            user: me.id,
+            action: trigger.getAttribute("data-resume"),
+            at: Date.now(),
+            fields: fieldsOf(trigger).map(function (f) {
+              return [fieldKind(f), f.type === "password" ? null : f.type === "checkbox" ? f.checked : f.value];
+            }),
+          }),
+        );
+        noted = true;
+      } catch (e) {
+        // Without storage the page comes back as before, without the change.
+      }
+    }
+    goToLogin(true, noted);
+  }
+
+  // The change noted before signing in again, when this load is the way back
+  // from that sign-in. Taken once, so a reload doesn't start it again.
+  function takeNoted() {
+    var back = new URLSearchParams(location.search).has("resume");
+    if (back) history.replaceState(null, "", location.pathname + location.hash);
+    var saved = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem(RESUME) || "null");
+      sessionStorage.removeItem(RESUME);
+    } catch (e) {
+      return null;
+    }
+    if (!back || !saved || saved.page !== location.pathname || typeof saved.action !== "string" || !Array.isArray(saved.fields)) return null;
+    var age = Date.now() - saved.at;
+    return age >= 0 && age < RESUME_MS ? saved : null;
+  }
+
+  function carryOn(saved) {
+    if (!saved || !me || saved.user !== me.id) return;
+    var target = Array.prototype.find.call(root.querySelectorAll("[data-resume]"), function (n) {
+      return n.getAttribute("data-resume") === saved.action;
+    });
+    if (!target) return;
+    var whole = true;
+    var retype = null;
+    saved.fields.forEach(function (s, i) {
+      // Read the fields again each time: choosing a service redraws its scopes.
+      var f = fieldsOf(target)[i];
+      if (!whole || !f || fieldKind(f) !== s[0]) {
+        whole = false;
+        return;
+      }
+      if (s[1] === null) retype = retype || f;
+      else if (f.type === "checkbox") f.checked = s[1];
+      else {
+        f.value = s[1];
+        if (f.tagName === "SELECT") f.dispatchEvent(new Event("change"));
+      }
+    });
+    if (fieldsOf(target).length !== saved.fields.length) whole = false;
+    target.scrollIntoView({ block: "center" });
+    if (!whole || retype) {
+      (retype || fieldsOf(target)[0] || target).focus();
+      return;
+    }
+    // A click or submit runs its handler, and so act, before it returns.
+    resuming = true;
+    try {
+      if (target.tagName === "FORM") target.requestSubmit();
+      else target.click();
+    } finally {
+      resuming = false;
+    }
   }
 
   function flash(kind, message) {
@@ -184,13 +288,21 @@
     node.hidden = !message;
   }
 
+  // Runs an action with its button disabled, and shows a failure in `out`.
+  // One that needs a recent sign-in goes to sign in again, and carries on
+  // after it (signInAgain).
   async function act(button, out, fn) {
+    var again = resuming;
     if (out) say(out, "");
     if (button) button.disabled = true;
     try {
       await fn();
     } catch (e) {
-      if (out && !(e instanceof ApiError && (e.status === 401 || e.code === "reauth_required"))) say(out, (e && e.message) || "That didn't work.");
+      if (e instanceof ApiError && e.code === "reauth_required" && !again) {
+        signInAgain(button && button.closest("[data-resume]"));
+        return;
+      }
+      if (out && !(e instanceof ApiError && e.status === 401)) say(out, (e && e.message) || "That didn't work.");
     } finally {
       if (button) button.disabled = false;
     }
@@ -288,19 +400,24 @@
     ["audit", "Audit log", showAudit],
   ];
 
+  // A tab, or with "users/<id>" one user: the hash says which, so a reload,
+  // or signing in again on the way, comes back to it.
   function go(name) {
+    var parts = (name || "").split("/");
     var tab =
       TABS.find(function (t) {
-        return t[0] === name;
+        return t[0] === parts[0];
       }) || TABS[0];
+    var user = tab[0] === "users" && parts.length === 2 && parts[1] ? parts[1] : null;
     Array.prototype.forEach.call(tabs.children, function (b) {
       if (b.dataset.tab === tab[0]) b.setAttribute("aria-current", "page");
       else b.removeAttribute("aria-current");
     });
-    if (location.hash !== "#" + tab[0]) history.replaceState(null, "", "#" + tab[0]);
+    var hash = "#" + tab[0] + (user ? "/" + user : "");
+    if (location.hash !== hash) history.replaceState(null, "", hash);
     clear(view);
-    tab[2]().catch(function (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.code === "reauth_required")) return;
+    return (user ? showUser(user) : tab[2]()).catch(function (e) {
+      if (e instanceof ApiError && e.status === 401) return;
       view.append(flash("error", (e && e.message) || "Couldn't load this."));
     });
   }
@@ -340,7 +457,7 @@
       data.items.forEach(function (u) {
         var open = el("button", { type: "button", class: "link" }, u.username);
         open.addEventListener("click", function () {
-          showUser(u.id);
+          go("users/" + u.id);
         });
         var detail = [u.name, u.email].filter(Boolean).join(" · ");
         list.append(
@@ -632,7 +749,7 @@
       clear(list);
       if (data.items.length === 0) list.append(el("li", { class: "blank" }, "None."));
       data.items.forEach(function (c) {
-        var rm = el("button", { type: "button", class: "danger sm" }, "Revoke");
+        var rm = el("button", { type: "button", class: "danger sm", "data-resume": kind + "-revoke:" + c.id }, "Revoke");
         rm.addEventListener("click", function () {
           if (!confirm("Revoke " + c.name + "?")) return;
           act(rm, out, async function () {
@@ -692,7 +809,7 @@
     var create = el("button", { type: "submit" }, isApw ? "Create app password" : "Create API key");
     var form = el(
       "form",
-      { class: "narrow" },
+      { class: "narrow", "data-resume": kind },
       el("label", {}, "Name", name),
       el("label", {}, "Service", svc),
       scopes,
@@ -929,13 +1046,19 @@
       tabs,
       view,
     );
+    var noted = takeNoted();
     try {
-      services = (await api("GET", "/v1/services")).items;
+      // Who is signed in: a change noted before signing in again carries on
+      // only for the same person.
+      var loaded = await Promise.all([api("GET", "/v1/services"), api("GET", "/v1/me")]);
+      services = loaded[0].items;
+      me = loaded[1];
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.code === "reauth_required")) return;
+      if (e instanceof ApiError && e.status === 401) return;
       view.append(flash("error", (e && e.message) || "Couldn't load the services."));
       return;
     }
-    go(location.hash.slice(1));
+    await go(location.hash.slice(1));
+    carryOn(noted);
   })();
 })();

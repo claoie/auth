@@ -165,8 +165,10 @@
   }
   ApiError.prototype = Object.create(Error.prototype);
 
-  function goToLogin(reauth) {
-    var params = new URLSearchParams({ return_to: location.pathname + location.hash });
+  // `resume` marks the way back, so the page knows to carry on with the
+  // change noted before leaving (signInAgain).
+  function goToLogin(reauth, resume) {
+    var params = new URLSearchParams({ return_to: location.pathname + (resume ? "?resume=1" : "") + location.hash });
     if (reauth) {
       params.set("reauth", "1");
       if (me && me.username) params.set("login_hint", me.username);
@@ -196,11 +198,111 @@
       goToLogin(false);
       throw new ApiError(401, code, "Sign in first.");
     }
-    if (res.status === 403 && code === "reauth_required") {
-      goToLogin(true);
-      throw new ApiError(403, code, "Sign in again to make this change.");
-    }
+    // reauth_required is act's to handle: it knows which change asked.
     throw new ApiError(res.status, code, (data && data.error_description) || "The request failed (" + res.status + ").");
+  }
+
+  // ------------------------------------------ signing in again, and on
+
+  // A change that needs a recent sign-in (§7.5) sends the browser to sign in
+  // again, and the sign-in brings it back here. The change, a form or button
+  // marked data-resume, is noted in this tab for the trip and starts again
+  // once the page is back, so it carries on instead of being lost. Its form's
+  // values go with it, but never a password: a form with one waits for it to
+  // be typed again. It carries on only for the same person, within
+  // RESUME_MS, and once: if it still needs a sign-in, it says why instead.
+  var RESUME = "auth.resume";
+  var RESUME_MS = 10 * 60 * 1000;
+  var resuming = false;
+
+  function fieldsOf(node) {
+    if (node.tagName !== "FORM") return [];
+    return Array.prototype.filter.call(node.elements, function (f) {
+      return f.tagName === "INPUT" || f.tagName === "SELECT" || f.tagName === "TEXTAREA";
+    });
+  }
+
+  function fieldKind(f) {
+    return f.tagName + ":" + f.type + (f.type === "checkbox" ? ":" + f.value : "");
+  }
+
+  function signInAgain(trigger) {
+    var noted = false;
+    if (trigger && me) {
+      try {
+        sessionStorage.setItem(
+          RESUME,
+          JSON.stringify({
+            page: location.pathname,
+            user: me.id,
+            action: trigger.getAttribute("data-resume"),
+            at: Date.now(),
+            fields: fieldsOf(trigger).map(function (f) {
+              return [fieldKind(f), f.type === "password" ? null : f.type === "checkbox" ? f.checked : f.value];
+            }),
+          }),
+        );
+        noted = true;
+      } catch (e) {
+        // Without storage the page comes back as before, without the change.
+      }
+    }
+    goToLogin(true, noted);
+  }
+
+  // The change noted before signing in again, when this load is the way back
+  // from that sign-in. Taken once, so a reload doesn't start it again.
+  function takeNoted() {
+    var back = new URLSearchParams(location.search).has("resume");
+    if (back) history.replaceState(null, "", location.pathname + location.hash);
+    var saved = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem(RESUME) || "null");
+      sessionStorage.removeItem(RESUME);
+    } catch (e) {
+      return null;
+    }
+    if (!back || !saved || saved.page !== location.pathname || typeof saved.action !== "string" || !Array.isArray(saved.fields)) return null;
+    var age = Date.now() - saved.at;
+    return age >= 0 && age < RESUME_MS ? saved : null;
+  }
+
+  function carryOn(saved) {
+    if (!saved || !me || saved.user !== me.id) return;
+    var target = Array.prototype.find.call(root.querySelectorAll("[data-resume]"), function (n) {
+      return n.getAttribute("data-resume") === saved.action;
+    });
+    if (!target) return;
+    var whole = true;
+    var retype = null;
+    saved.fields.forEach(function (s, i) {
+      // Read the fields again each time: choosing a service redraws its scopes.
+      var f = fieldsOf(target)[i];
+      if (!whole || !f || fieldKind(f) !== s[0]) {
+        whole = false;
+        return;
+      }
+      if (s[1] === null) retype = retype || f;
+      else if (f.type === "checkbox") f.checked = s[1];
+      else {
+        f.value = s[1];
+        if (f.tagName === "SELECT") f.dispatchEvent(new Event("change"));
+      }
+    });
+    if (fieldsOf(target).length !== saved.fields.length) whole = false;
+    target.scrollIntoView({ block: "center" });
+    if (!whole || retype) {
+      (retype || fieldsOf(target)[0] || target).focus();
+      return;
+    }
+    // A click or submit runs its handler, and so act, before it returns.
+    resuming = true;
+    try {
+      if (target.tagName === "FORM") target.requestSubmit();
+      else target.click();
+    } finally {
+      resuming = false;
+    }
   }
 
   // A step-up (adding a second factor) gives the session a new token, and the
@@ -237,13 +339,20 @@
   }
 
   // Runs an action with its button disabled, and shows a failure in `out`.
+  // One that needs a recent sign-in goes to sign in again, and carries on
+  // after it (signInAgain).
   async function act(button, out, fn) {
+    var again = resuming;
     if (out) say(out, "");
     if (button) button.disabled = true;
     try {
       await fn();
     } catch (e) {
-      if (out && !(e instanceof ApiError && (e.status === 401 || e.code === "reauth_required"))) {
+      if (e instanceof ApiError && e.code === "reauth_required" && !again) {
+        signInAgain(button && button.closest("[data-resume]"));
+        return;
+      }
+      if (out && !(e instanceof ApiError && e.status === 401)) {
         var msg = e && e.name === "NotAllowedError" ? "The passkey prompt was cancelled or timed out." : (e && e.message) || "That didn't work.";
         say(out, msg);
       }
@@ -434,7 +543,7 @@
     var save = el("button", { type: "submit" }, "Save");
     var form = el(
       "form",
-      {},
+      { "data-resume": "profile" },
       el("div", { class: "field-static" }, el("span", {}, "Username"), el("span", {}, el("code", {}, me.username), el("span", { class: "hint" }, " · it never changes"))),
       el("label", {}, "Name", name),
       el("label", {}, "Recovery email", email),
@@ -469,7 +578,7 @@
     var save = el("button", { type: "submit", class: "secondary" }, "Change password");
     var form = el(
       "form",
-      { class: "narrow" },
+      { class: "narrow", "data-resume": "password" },
       hidden,
       el("label", {}, "Current password", current),
       el("label", {}, "New password", next),
@@ -505,7 +614,7 @@
       ),
     );
     if (me.mfa.totp) {
-      var remove = el("button", { type: "button", class: "danger sm" }, "Remove");
+      var remove = el("button", { type: "button", class: "danger sm", "data-resume": "totp-remove" }, "Remove");
       remove.addEventListener("click", function () {
         if (!confirm("Remove the authenticator app? Services that need a second factor will ask you to set one up again.")) return;
         act(remove, out, async function () {
@@ -516,7 +625,7 @@
       line.append(main, remove, out);
       return;
     }
-    var start = el("button", { type: "button", class: "sm" }, "Set up");
+    var start = el("button", { type: "button", class: "sm", "data-resume": "totp-setup" }, "Set up");
     line.append(main, start, out);
     start.addEventListener("click", function () {
       act(start, out, async function () {
@@ -574,7 +683,11 @@
     var line = el("div", { class: "box-row" });
     box.append(line);
     var out = status();
-    var regen = el("button", { type: "button", class: "secondary sm" }, me.mfa.recovery_codes ? "Make new recovery codes" : "Make recovery codes");
+    var regen = el(
+      "button",
+      { type: "button", class: "secondary sm", "data-resume": "recovery-codes" },
+      me.mfa.recovery_codes ? "Make new recovery codes" : "Make recovery codes",
+    );
     var holder = el("div", { class: "row-detail" });
     regen.addEventListener("click", function () {
       if (me.mfa.recovery_codes && !confirm("Make new recovery codes? The ones you have stop working.")) return;
@@ -610,7 +723,7 @@
     var supported = typeof window.PublicKeyCredential === "function" && navigator.credentials;
     var name = el("input", { maxlength: "100", placeholder: "e.g. Laptop", value: "" });
     var add = el("button", { type: "submit", class: "secondary" }, "Add a passkey");
-    var form = el("form", { class: "inline" }, el("label", {}, "Name", name), add);
+    var form = el("form", { class: "inline", "data-resume": "passkey-add" }, el("label", {}, "Name", name), add);
     var footer = el("div", { class: "box-footer" }, form);
     if (!supported) footer.hidden = true;
     s.append(
@@ -624,7 +737,7 @@
       clear(list);
       if (data.items.length === 0) list.append(blank("No passkeys yet."));
       data.items.forEach(function (p) {
-        var rm = el("button", { type: "button", class: "danger sm" }, "Remove");
+        var rm = el("button", { type: "button", class: "danger sm", "data-resume": "passkey-remove:" + p.id }, "Remove");
         rm.addEventListener("click", function () {
           if (!confirm("Remove the passkey " + p.name + "?")) return;
           act(rm, out, async function () {
@@ -725,7 +838,7 @@
       clear(list);
       if (data.items.length === 0) list.append(blank(isApw ? "No app passwords." : "No API keys."));
       data.items.forEach(function (c) {
-        var rm = el("button", { type: "button", class: "danger sm" }, "Revoke");
+        var rm = el("button", { type: "button", class: "danger sm", "data-resume": kind + "-revoke:" + c.id }, "Revoke");
         rm.addEventListener("click", function () {
           if (!confirm("Revoke " + c.name + "? Anything using it stops working.")) return;
           act(rm, out, async function () {
@@ -783,7 +896,7 @@
     var create = el("button", { type: "submit" }, isApw ? "Create app password" : "Create API key");
     var form = el(
       "form",
-      { class: "box-body narrow" },
+      { class: "box-body narrow", "data-resume": kind },
       el("label", {}, "Name", name),
       el("label", {}, "Service", service),
       scopes,
@@ -818,7 +931,7 @@
 
   function renderDelete(s) {
     var out = status();
-    var del = el("button", { type: "button", class: "danger" }, "Delete my account");
+    var del = el("button", { type: "button", class: "danger", "data-resume": "delete" }, "Delete my account");
     del.addEventListener("click", function () {
       if (!confirm("Delete your account? This can't be undone, and every service is told to delete or anonymise your data.")) return;
       act(del, out, async function () {
@@ -888,7 +1001,7 @@
     showPane();
     var fail = function (where) {
       return function (e) {
-        if (e instanceof ApiError && (e.status === 401 || e.code === "reauth_required")) return;
+        if (e instanceof ApiError && e.status === 401) return;
         where.append(flash("error", (e && e.message) || "Couldn't load this."));
       };
     };
@@ -907,6 +1020,7 @@
   }
 
   (async function start() {
+    var noted = takeNoted();
     try {
       await reload();
       if (location.hash) {
@@ -917,6 +1031,8 @@
       if (e instanceof ApiError && e.status === 401) return;
       clear(root);
       root.append(flash("error", (e && e.message) || "Couldn't load your account."));
+      return;
     }
+    carryOn(noted);
   })();
 })();
