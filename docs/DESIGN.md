@@ -24,7 +24,7 @@ Status: built through phase 3 (§13); phase 4 is designed, not built. Scope: an 
 auth is a product. Anyone can deploy it anywhere and connect whatever apps they run. Any one deployment, including the maintainer's, is one adaptation of it, configured outside this repository.
 
 - **Nothing in this repo names or assumes a particular deployment**: not in code, defaults, tests, CI, docs, examples or comments. That rules out real hostnames, domains, app names, operators, hosts and resource figures taken from a specific setup. Examples use reserved names: `example.com`, `.test` and `.internal` domains, the services `wiki`, `tasks` and `mailbox`, and the users `alice` and `bob`.
-- **A deployment's specifics are configuration.** That covers its services and their roles, clients and redirect URIs (§6), its issuer URL, secrets, prefixes and alert target. They live in the deployment's environment and files, reviewed wherever that deployment keeps its own configuration.
+- **A deployment's specifics are configuration.** That covers its services and their roles, clients and redirect URIs (§6), its issuer URL, secrets, prefixes and alert target. They live in the deployment's environment and files, reviewed wherever that deployment keeps its own configuration, except the services an `auth:admin` registers on the admin page, which live in auth's database (§6.2).
 - **Integration goes only through documented interfaces.** These are the OIDC endpoints, the token and event contracts (§7), the management API and the configuration. auth learns about an app only from its registration, never from code written for it.
 - **A feature exists because a kind of app needs it**, and it is described as that kind: "a protocol that can only carry a password", not one named server. A default must make sense for any deployment.
 - **The apps on the other side follow the same principle.** Each integrating app is a product of its own. It reaches an identity provider through configuration (issuer URL, client id and secret) and works with any OIDC provider, this one included. It never depends on a particular auth deployment, and auth never depends on it.
@@ -175,10 +175,10 @@ Rejected shapes (a proxy `auth_request` gateway, a shared cookie on the parent d
 The whole model is three nouns:
 
 - **User.** A person or a bot. `id` is `usr_` followed by 26 base32 characters (a time-ordered UUIDv7). `username` is `[a-z][a-z0-9-]{1,30}[a-z0-9]`, unique and immutable, so a service can use it as a DNS label or an address. Plus `name`, `email` and `disabled_at`.
-- **Service.** Something a user can be given access to. It declares its roles in order, its sign-up policy, the roles that require MFA, its scopes, its OAuth clients and its event URL. Services are **the deployment's configuration**: a JSON file auth reads at start (§11), kept wherever that deployment reviews its configuration. Their client secrets live in auth's database.
+- **Service.** Something a user can be given access to. It declares its roles in order, its sign-up policy, the roles that require MFA, its scopes, its OAuth clients and its event URL. Services are **the deployment's configuration**: an `auth:admin` registers them on the admin page, which stores them in auth's database, or the deployment declares them in a services file auth reads at start (§6.2). Their client secrets live in auth's database either way.
 - **Access.** `(user, service) → role`, at most one row per pair. No row means no access. There is nothing else to evaluate.
 
-A services file, for a deployment with a wiki, a task tracker and a mail server:
+A service has the same shape wherever it is defined. As a services file, for a deployment with a wiki, a task tracker and a mail server:
 
 ```json
 {
@@ -229,17 +229,17 @@ The fields of a service:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `name` | yes | `[a-z][a-z0-9-]{0,62}`, unique; `auth` is reserved. It is the token's `aud`. |
+| `name` | yes | `[a-z][a-z0-9-]{0,62}`, unique; `auth` is reserved. It is the token's `aud`, and a registered service's name never changes. |
 | `roles` | yes | One or more distinct role names, lowest first. |
 | `mfa_roles` | yes | The roles that require MFA (§9.1), a subset of `roles`. There is no default: every deployment decides, and `[]` is a decision too. |
 | `signup` | yes | How people get access without an admin granting it to them one by one. `closed`: they don't. Access comes only from a grant by an `auth:admin`, or by the service's own client when `manages_own_members` is set, and only to existing accounts; no invitations. `invite`: also anyone holding an invitation (§7.5) creates their own account, or uses an existing one, and gets the invited role. `open`: also anyone may create an account on auth's sign-up page or through a platform sign-in (§12.3), and a signed-in user without an access row gets `default_role` when they sign in to the service. So on an open service a role can be changed but not removed: removal answers `409 conflict`, since the next sign-in would grant `default_role` again, and disabling the user (rule 5) is how to keep them out. |
 | `default_role` | with `signup: "open"` | The role an open sign-up receives; one of `roles`. |
 | `manages_own_members` | no (`false`) | The service's own client may call the ★ endpoints of §7.5 for this service. |
 | `api_key_scopes`, `app_password_scopes` | no (none) | The scopes API keys and app passwords for this service may carry. A service with neither gets neither kind of credential. |
-| `clients` | yes | One or more, each with an `id` unique across every service, a `type` (`confidential` or `public`), `redirect_uris` and optional `post_logout_redirect_uris`. Redirect URIs are absolute: `https`, `http` only for a loopback host (`localhost`, `127.0.0.1` or `[::1]`, RFC 8252 §7.3), or a private-use scheme for a public client (RFC 8252). |
+| `clients` | yes | One or more, each with an `id` unique across every service, a `type` (`confidential` or `public`), `redirect_uris` and optional `post_logout_redirect_uris`. Redirect URIs are absolute: `https`, `http` only for a loopback host (`localhost`, `127.0.0.1` or `[::1]`, RFC 8252 §7.3), or a private-use scheme for a public client (RFC 8252). A registered client's `id` and `type` never change (§6.2). |
 | `events_url` | no | Where §7.4's events go. A service without one relies on the pull (§7.1), and on reading its pending invites (§12.6). |
 
-The file is checked at start, like every other setting: a file that breaks any rule above stops the start, and every problem is listed at once.
+The file is checked at start, like every other setting: a file that breaks any rule above stops the start, and every problem is listed at once. A registration is checked against the same rules and refused with every problem listed. It may also write `[]` or `null` for a field the file would leave out, as `GET /v1/services` answers, and it is capped so that every copy can hold every service: at most 100 registered services, each with at most 32 roles, 32 scopes of each kind and 5 clients, each client with at most 10 redirect URIs and 10 sign-out URIs, and each URI at most 1024 characters.
 
 Rules, in full:
 1. **Default deny.** No access row means the app refuses with 403 after sign-in, and auth's page says "you don't have access to wiki". The one exception is a service with `signup: "open"`, which gives a signed-in user without a row its `default_role`.
@@ -266,6 +266,30 @@ So the role on a service is authorization, the coarse kind. auth is the gate in 
 - **moving them out costs more than it saves.** Checking them in auth puts a network call on every request (against goal 4); keeping a synced copy in each app rebuilds the app's own membership table with a sync protocol in front of it (§14).
 
 The service role still bounds the app's own roles: a person without one can't sign in to the app, so whatever the app's tables say, they reach none of its resources.
+
+### 6.2 Registering services
+
+Connecting an app takes no shell on the host and no restart. Services come from two places:
+
+- **The admin page**, or the management API it calls (§7.5). An `auth:admin` registers a service, changes or deletes it, and makes and retires its clients' secrets. The page then shows what the app is configured with: the issuer, the client id and secret, the redirect URI and the audience (§7.6). These services are stored in auth's database.
+- **A services file** (`SERVICES_FILE`, optional), read at start, for a deployment that keeps its services in configuration it reviews elsewhere. A service the file declares is read-only on the admin page and changes with a restart. Its clients' secrets are made with the CLI (§9.6), so an admin can neither send its sign-ins elsewhere nor stop its app's.
+
+Names and client ids are unique across both. When the file and the database both have a service of the same name, or the database's uses a client id the file gives another service, the file's is in effect and the database's is **held**: listed, not used, until the file no longer declares it.
+
+**Every copy sees a change at once.** A registration, change or deletion bumps a revision number in the same transaction. Each request reads the revision, one single-row read, before it starts. When it has moved, the copy reloads the services first. Each request then uses one set of services from start to end, and two copies running side by side never disagree for longer than a request.
+
+**What a change does to what already exists:**
+- **A service's name and a client's id and type are fixed.** A confidential client turned public would let anyone holding one of its refresh tokens use them without the secret, so a new type is a new client. A held copy can't give a file client's id another type either. And whatever an id's type becomes, through the file or a later registration, a refresh token is honored only for a client of the type it was issued to.
+- **A role is removed only when no one holds it and no pending invitation offers it,** and `409 conflict` answers otherwise. An access row whose role the service no longer declares would carry a role that `mfa_roles` can't name.
+- **A scope can be removed at any time.** App passwords and keys made earlier keep the scopes they were made with, and introspection reports them; new ones can't take it.
+- **`mfa_roles`, `signup` and `default_role`** apply from the next sign-in or refresh, and redirect URIs from the next request. Events already queued go to the current `events_url`.
+- **Removing a client** revokes its secrets and refresh tokens and drops its unused codes, so a client registered later under the same id inherits nothing.
+- **Deleting a service** deletes every access row and invitation for it, and revokes its app passwords, API keys, clients' refresh tokens and secrets. It sends no event, since the app is gone. A service registered later under the same name starts empty. Deleting a held copy deletes only the copy.
+- **A registered service with `api_key_scopes`** needs `API_KEY_PREFIX`, as a file's does: it is refused without it, and a copy that starts without the prefix while one is registered stops and says so.
+
+**Moving a service from the file to the admin page, with no outage:** copy it to the database on the admin page, where the copy is held. Then remove it from the file and restart, and the copy is in effect. Access, credentials, invitations and client secrets are keyed by the service's name and client ids, so they carry over and no one signs in again. A held copy can be deleted, not changed. **To move one the other way**, into reviewed configuration, add it to the file and restart: the file's definition takes over, and the database's is held until it is deleted.
+
+**What this lets an admin do.** An `auth:admin` who can add a redirect URI to a client and make its secret can sign in to that app as any of its users. So every change needs a sign-in in the last 15 minutes with a second factor, as a credential change does (§7.5), and every change is audited and alerted, the alert naming each redirect URI it adds (§9.5). A deployment that wants a service out of an admin's reach declares it in the file.
 
 ## 7. Interfaces
 
@@ -415,8 +439,14 @@ Changing password, MFA, passkeys, app passwords or keys, or the recovery email, 
 | `DELETE /v1/users/{id}/sessions` | Sign the user out everywhere |
 | `POST /v1/users/{id}/reset` | `{send_link: true, clear_mfa: bool}` |
 | `POST` / `GET` / `DELETE /v1/invites[/{id}]` ★ | `{email, service, role}`, answering with the invite's `id`; refused for a service with `signup: "closed"`. Accepting gives the invited role, never lowering a role the user already holds, and sends `invite.accepted` (§7.4). `GET` shows `accepted_by` and `accepted_at` once it is accepted. |
-| `GET /v1/services` | Services, roles, sign-up policy |
+| `GET /v1/services` | The services in effect, each with its whole definition, its `source` (`builtin` for `auth`, `file` or `database`) and, for each confidential client, the `created_at` of its live secrets; and the `held` ones (§6.2) |
+| `POST /v1/services` | Register a service. The body is one service in the shape of §6. `409` when the name is registered or a client id is in use; a name the services file declares makes a held copy (§6.2). |
+| `PUT` / `DELETE /v1/services/{name}` | Replace a registered service's definition (the same shape; its name, client ids and client types fixed), or delete it (§6.2). `409` for a service the file declares; `DELETE` deletes a held copy. |
+| `POST /v1/clients/{id}/secrets` | A new secret for a registered service's confidential client, shown once. The newest earlier one keeps working until the call below, so the app can be moved to the new one (§9.3). `409` for a client of the services file, whose secrets the CLI makes (§6.2). |
+| `DELETE /v1/clients/{id}/old-secrets` | Retire every secret of a registered client but the newest |
 | `GET /v1/audit?user=&after=` | Audit log |
+
+Registering, changing or deleting a service, and making or retiring a secret, need a sign-in in the last 15 minutes with a second factor, as a credential change does, and each is alerted (§6.2).
 
 An example of changing a role:
 
@@ -501,7 +531,7 @@ CREATE TABLE identities (                             -- platform sign-in (§12.
 
 CREATE TABLE access (
   user_id    text NOT NULL REFERENCES users ON DELETE CASCADE,
-  service    text NOT NULL,                           -- checked against the services file (§6)
+  service    text NOT NULL,                           -- checked against the services (§6.2)
   role       text NOT NULL,
   granted_by text NOT NULL,                           -- usr_… or cli_<service>
   granted_at timestamptz NOT NULL DEFAULT now(),
@@ -591,6 +621,35 @@ CREATE TABLE client_secrets (                         -- two may be live during 
   created_at  timestamptz NOT NULL DEFAULT now(),
   revoked_at  timestamptz,
   PRIMARY KEY (client_id, secret_hash)
+);
+
+CREATE TABLE services (                               -- registered on the admin page (§6.2); the file's aren't stored
+  name                text PRIMARY KEY,
+  roles               text[] NOT NULL,
+  mfa_roles           text[] NOT NULL,
+  signup              text NOT NULL CHECK (signup IN ('closed', 'invite', 'open')),
+  default_role        text,
+  manages_own_members boolean NOT NULL DEFAULT false,
+  api_key_scopes      text[] NOT NULL DEFAULT '{}',
+  app_password_scopes text[] NOT NULL DEFAULT '{}',
+  events_url          text,
+  created_by          text NOT NULL,                  -- usr_…
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE clients (                                -- a registered service's clients
+  id                        text PRIMARY KEY,
+  service                   text NOT NULL REFERENCES services ON DELETE CASCADE,
+  type                      text NOT NULL CHECK (type IN ('confidential', 'public')),
+  redirect_uris             text[] NOT NULL,
+  post_logout_redirect_uris text[] NOT NULL DEFAULT '{}',
+  created_at                timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE services_revision (                      -- one row, bumped by every change to the two above
+  id       boolean PRIMARY KEY DEFAULT true CHECK (id),
+  revision bigint NOT NULL DEFAULT 0
 );
 
 CREATE TABLE invites (
@@ -734,7 +793,7 @@ CREATE UNLOGGED TABLE throttle (                      -- shared across every cop
   - auth's role owns only auth's database, and `CONNECT` on it is revoked from `PUBLIC`.
   - `pg_hba.conf` limits auth's role to the network auth runs on.
   - No app's role can connect to auth's database.
-- **Client secrets:** 32 random bytes, SHA-256 stored, two live at once while one is rotated. They are made with the CLI and put into the app's environment.
+- **Client secrets:** 32 random bytes, SHA-256 stored, two live at once while one is rotated. A registered client's are made on the admin page, a services file client's with the CLI (§6.2); each is shown once and put into the app's environment.
 - **Logging:** the logs never carry a password, code, token, secret, `Authorization` header or cookie. This is enforced by one request logger that prints the method, a route name, the status and the timing, and nothing else (`src/server.ts`).
 
 ### 9.4 Abuse controls
@@ -759,7 +818,7 @@ Counters live in the `throttle` table, so every copy shares them and a restart d
 | Credential stuffing and password spraying | Breached-password check, per-account and per-IP throttling, TOTP and passkeys, MFA required for `auth:admin` and for each service's `mfa_roles`, which every service must set (§6) |
 | Phishing | Passkeys bound to the issuer's host; the sign-in UI exists only there |
 | A stolen app session cookie | Lasts at most until the SSO session ends; listed in Devices and revocable; `__Host-`, `Secure` and `HttpOnly` |
-| A stolen refresh token | Useless without the client secret for confidential clients; rotation and reuse detection for public clients |
+| A stolen refresh token | Useless without the client secret for confidential clients, even once the client id is given to a public client (§6.2); rotation and reuse detection for public clients |
 | A stolen access token | 10-minute lifetime and audience-bound |
 | Authorization code interception or injection | PKCE S256 for every client, single-use 60 s codes, exact `redirect_uri`, `state` and `nonce` |
 | Open redirect | Exact-match registered URIs only |
@@ -769,7 +828,7 @@ Counters live in the `throttle` table, so every copy shares them and a restart d
 | A compromised auth image | Every integrated app falls. So: no runtime dependencies; an image run by digest (§11), either the deployment's own reviewed pin or the digest CD's run posts to its deploy hook, so that pushing over a tag changes nothing (a hook that pulls `latest` gives this up, and makes the registry credential as sensitive as merge rights); MFA on `auth:admin`; and an alert on every access change for `auth` and on every break-glass use. |
 | Database read by a third party | §9.3 |
 | An app password sent before TLS on a password-only protocol | The server refuses AUTH before TLS on every port (§12.4) |
-| A malicious admin, or a mistake | Audit log, an alert on admin actions, A5 needing an out-of-band check |
+| A malicious admin, or a mistake | Audit log, an alert on admin actions, A5 needing an out-of-band check. A change to a service, which can add a redirect URI and make a secret, needs a recent sign-in with a second factor, and its alert names each redirect URI it adds; a service in the services file is out of an admin's reach (§6.2). |
 | Account takeover through the recovery email | Old-address notice on change, second factor still required after a reset, 30-minute single-use links |
 
 ### 9.6 Availability and break-glass
@@ -810,6 +869,7 @@ Every CLI action is audited as `host-cli` and posted to the alert webhook, if on
 **Resources**
 - **Memory and CPU:** designed for a 128 MB limit and half a CPU. Bun's resting RSS is typically 40–60 MB, plus at most 38 MiB of argon2id. That is near an 85% alarm line (109 MB). A deployment that expects bursts of sign-ins should measure its peak and raise the limit if needed.
 - **Database load** is dominated by refreshes, one per active session per 10 minutes. At 50 active sessions that is about 0.1 queries per second. The pool is 5 connections.
+- **Services** are kept in each copy and checked against their revision once per request (§6.2): one single-row read, skipped by health checks and static files. A change reloads them in one query.
 - **The apps** gain a small client and a JWKS of a few hundred bytes. They lose their password hashing, so peak memory falls.
 
 ## 11. Deployment
@@ -822,7 +882,7 @@ Every CLI action is audited as `host-cli` and posted to the alert webhook, if on
   - 128 MB and half a CPU (§10).
   - Two copies may run side by side during a deploy, so every piece of state lives in Postgres (§8).
   - A `HEALTHCHECK` on `/healthz`. SIGTERM finishes requests in flight and exits.
-- **Configuration**, all of it the deployment's own: the issuer URL (`ISSUER_URL`), the services file (§6, `SERVICES_FILE`), `DATABASE_URL`, `AUTH_ENCRYPTION_KEY` and, during a rotation, `AUTH_DECRYPTION_KEYS` (§9.3), the API key prefix (`API_KEY_PREFIX`), the trusted proxies (`TRUSTED_PROXIES`), the SMTP server for its emails (`SMTP_URL`, `EMAIL_FROM`), the audit retention (`AUDIT_RETENTION_DAYS`, default 1 year), whether people may delete their own accounts (U14; `ALLOW_ACCOUNT_DELETION`, default no), and an optional alert webhook (`ALERT_WEBHOOK_URL`). Secrets come from the environment, never from the image or the database (§9.3).
+- **Configuration**, all of it the deployment's own: the issuer URL (`ISSUER_URL`), an optional services file (§6.2, `SERVICES_FILE`), `DATABASE_URL`, `AUTH_ENCRYPTION_KEY` and, during a rotation, `AUTH_DECRYPTION_KEYS` (§9.3), the API key prefix (`API_KEY_PREFIX`), the trusted proxies (`TRUSTED_PROXIES`), the SMTP server for its emails (`SMTP_URL`, `EMAIL_FROM`), the audit retention (`AUDIT_RETENTION_DAYS`, default 1 year), whether people may delete their own accounts (U14; `ALLOW_ACCOUNT_DELETION`, default no), and an optional alert webhook (`ALERT_WEBHOOK_URL`). Secrets come from the environment, never from the image or the database (§9.3).
 - **No app depends on auth to start.** Apps fetch keys lazily and keep serving signed-in users while auth is down (§9.6).
 - **Database.** Postgres 16: a database and a role of auth's own, the database owned by that role, `CONNECT` revoked from `PUBLIC`, and `pg_hba.conf` allowing the role only from the network auth runs on. No app's role can connect to it.
 - **Break-glass CLI.** Runs inside a running container (§9.6).
@@ -830,7 +890,7 @@ Every CLI action is audited as `host-cli` and posted to the alert webhook, if on
 
 ## 12. Integrating an app
 
-Each section covers a kind of app (§2.2). An app integrating with auth keeps its own sign-in behind a flag until its cutover is verified (§13), so a cutover is undone by turning off one flag.
+Each section covers a kind of app (§2.2). Every kind starts the same way: an `auth:admin` registers the service on the admin page, makes each confidential client's secret there, and configures the app with the values the page shows (§6.2). An app integrating with auth keeps its own sign-in behind a flag until its cutover is verified (§13), so a cutover is undone by turning off one flag.
 
 ### 12.1 A web app
 
@@ -870,7 +930,7 @@ For IMAP, SMTP, CalDAV, WebDAV and the like:
 
 ### 12.5 API keys for an app's API
 
-- **The app checks a `Bearer` key with `auth.introspect`**, and gets back its owner, the owner's current role on the service, and the key's scopes. It authorizes the request by both: a scope grants only what the role also allows, so a key loses power when its owner is moved to a lower role (rule 3). The service declares its scopes in the services file.
+- **The app checks a `Bearer` key with `auth.introspect`**, and gets back its owner, the owner's current role on the service, and the key's scopes. It authorizes the request by both: a scope grants only what the role also allows, so a key loses power when its owner is moved to a lower role (rule 3). The service declares its scopes in its definition (§6).
 - **An app with its own key table can move it into auth:** copy each key's hash, scopes, expiry and revocation into `credentials`, with its owner mapped through `auth_sub`. When the old hashes are SHA-256 of the full key, introspection finds them by hash, so **existing keys keep working without reissue**. The CLI does the copy: `bun cli.ts import api-keys --service <name> <file>` reads one JSON object per line, `{"owner", "sha256", "scopes", "name"?, "expires_at"?, "revoked_at"?, "created_at"?, "last_used_at"?}`, where `owner` is the user's `sub` or username and `sha256` is the key's hash in hex or base64. Each owner must already hold a role on the service.
 
 ### 12.6 An app with resources inside it, and its own members
@@ -938,6 +998,8 @@ Both imports are all or nothing: every line is checked first, every problem is l
 | **Authelia** | Light and good at forward auth, but users live in a file or LDAP with no management API, and it has nothing for app passwords on password-only protocols. |
 | **Pocket ID** | Passkey-only: password-only protocol clients can't use it. |
 | **Kanidm** | Strong, but its integration surface (LDAP, RADIUS) suits a fleet, and password-only protocol servers would need an LDAP bind path. |
+| **Services only in a file** | Each new app took a shell on the host, an edit to a mounted file and a restart of every copy, then a CLI call for its secret. Kept as an option for a deployment that reviews its services elsewhere, or wants one out of an admin's reach (§6.2). |
+| **Registered services cached on a timer, or invalidated with `LISTEN`/`NOTIFY`** | A copy would keep serving a deleted client or a removed redirect URI until the next tick, or for good after a missed notification. A revision read per request costs one single-row query (§10). |
 | **Central fine-grained authorization**: a policy engine (OPA, Cedar) or a Zanzibar-style store (SpiceDB, OpenFGA) holding every app's resource roles | Each check becomes a network call (against goal 4), or each app keeps a synced copy, which is its own membership table with a sync protocol in front of it. Either way the roles leave the data they describe, and "the spaces Alice can see" stops being one query. It pays off when many apps share the same resources; here each app's resources are its own (§6.1). |
 
 **The cost of building it** is owning security-critical code. That is contained by:
@@ -948,6 +1010,5 @@ Both imports are all or nothing: every line is checked first, every problem is l
 
 ## 15. Open questions
 
-1. **Services at runtime:** the services file needs a restart to change. Is that enough, or do deployments need to register services through the management API?
-2. **Federation with outside identity providers** (sign in with an existing OIDC provider) is a non-goal for v1. What would make it a goal?
-3. **Groups shared across services** (a group such as "Support" that several apps give roles to) are a non-goal; an app's own groups are its own (§12.6). What signal would show that shared groups are needed: the same people granted the same roles in several apps, again and again?
+1. **Federation with outside identity providers** (sign in with an existing OIDC provider) is a non-goal for v1. What would make it a goal?
+2. **Groups shared across services** (a group such as "Support" that several apps give roles to) are a non-goal; an app's own groups are its own (§12.6). What signal would show that shared groups are needed: the same people granted the same roles in several apps, again and again?
