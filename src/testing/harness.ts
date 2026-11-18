@@ -135,6 +135,19 @@ export async function testApp(sql: SQL, env: Record<string, string> = {}, servic
   return { app, router: buildRouter(), mails, alerts, logs, secrets };
 }
 
+// Another copy of the app on the same database, as in a rolling deploy, with
+// a services file of its own. It makes no client secrets: the first copy's
+// stay live.
+export function testCopy(first: TestApp, env: Record<string, string> = {}, services: unknown = SERVICES): TestApp {
+  const mails: MailMessage[] = [];
+  const alerts: string[] = [];
+  const logs: string[] = [];
+  const app = createApp(testConfig(env, services), first.app.sql, { send: async () => {} }, { log: (l) => logs.push(l), breached: async () => false });
+  app.mail = (m) => mails.push(m);
+  app.alert = (t) => alerts.push(t);
+  return { app, router: buildRouter(), mails, alerts, logs, secrets: first.secrets };
+}
+
 // §9.1's parameters, hashed directly: fixtures don't need the semaphore.
 export async function fixtureHash(password: string): Promise<string> {
   return Bun.password.hash(password, ARGON2);
@@ -145,6 +158,8 @@ export async function makeUser(
   u: { username: string; password?: string; email?: string; kind?: "person" | "bot"; access?: Record<string, string>; ownerId?: string },
 ): Promise<string> {
   const hash = u.password ? await fixtureHash(u.password) : null;
+  // The services as they are now, registered ones included, as a request sees them.
+  const current = await t.app.prepare();
   return transaction(t.app.sql, async (tx, after) => {
     const id = await insertUser(tx, {
       username: u.username,
@@ -156,7 +171,7 @@ export async function makeUser(
       passwordHash: hash,
     });
     for (const [service, role] of Object.entries(u.access ?? {})) {
-      await putAccess(tx, t.app, { userId: id, service: t.app.services.get(service)!, role, actor: "host-cli", ip: null }, after);
+      await putAccess(tx, current, { userId: id, service: current.services.get(service)!, role, actor: "host-cli", ip: null }, after);
     }
     return id;
   });

@@ -6,6 +6,12 @@ export interface ServerDeps {
   log: (line: string) => void;
 }
 
+// Deps that give each request a view of their own, so what it reads, such
+// as the services, stays the same from its start to its end.
+export interface Preparing<D> {
+  prepare?(): Promise<D>;
+}
+
 export interface Ctx<D> {
   req: Request;
   url: URL;
@@ -22,6 +28,9 @@ export interface Route<D> {
   // code or a token (docs/DESIGN.md §9.3).
   name: string;
   methods: Partial<Record<string, Handler<D>>>;
+  // Served without prepare: health checks and static files need nothing a
+  // request reads from the database.
+  bare: boolean;
 }
 
 const PARAM = /^[A-Za-z0-9._~-]{1,128}$/;
@@ -32,8 +41,8 @@ export class Router<D> {
   readonly #exact = new Map<string, Route<D>>();
   readonly #patterns: { segments: string[]; route: Route<D> }[] = [];
 
-  add(pattern: string, name: string, methods: Route<D>["methods"]): this {
-    const route = { name, methods };
+  add(pattern: string, name: string, methods: Route<D>["methods"], opts: { bare?: boolean } = {}): this {
+    const route = { name, methods, bare: opts.bare ?? false };
     if (pattern.includes("/:")) this.#patterns.push({ segments: pattern.split("/"), route });
     else this.#exact.set(pattern, route);
     return this;
@@ -62,10 +71,10 @@ export class Router<D> {
 }
 
 export function healthRoutes<D extends ServerDeps>(router: Router<D> = new Router<D>()): Router<D> {
-  return router.add("/healthz", "healthz", { GET: healthz });
+  return router.add("/healthz", "healthz", { GET: healthz }, { bare: true });
 }
 
-export async function handle<D extends ServerDeps>(
+export async function handle<D extends ServerDeps & Preparing<D>>(
   req: Request,
   deps: D,
   router: Router<D> = healthRoutes<D>(),
@@ -85,7 +94,8 @@ export async function handle<D extends ServerDeps>(
         const allowed = Object.keys(found.route.methods);
         res = errorResponse(405, "method_not_allowed", `Use ${allowed.join(" or ")}.`, { Allow: allowed.join(", ") });
       } else {
-        res = await handler({ req, url, params: found.params, ip, deps });
+        const scoped = found.route.bare || !deps.prepare ? deps : await deps.prepare();
+        res = await handler({ req, url, params: found.params, ip, deps: scoped });
       }
     }
   } catch (e) {

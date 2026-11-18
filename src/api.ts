@@ -1,7 +1,7 @@
 import { accessJson, deleteAccess, putAccess, roleOf, type AccessRow } from "./access";
 import type { App } from "./app";
 import { audit, clientActor } from "./audit";
-import { authenticateClient } from "./clients";
+import { authenticateClient, retireOldClientSecrets, rotateClientSecret } from "./clients";
 import { createCredential, credentialJson, listCredentials, revokeCredential, type CredentialKind } from "./credentials";
 import { ID_PATTERN } from "./crypto";
 import { activationEmail, addressInUseEmail, resetEmail, securityNotice, verifyEmail, type SecurityChange } from "./emails";
@@ -10,8 +10,9 @@ import { HttpError, json, noContent, readJson } from "./http";
 import { createInvite, inviteJson, type InviteRow } from "./invites";
 import { finishRegistration, listPasskeys, passkeyJson, registrationOptions } from "./passkeys";
 import { BREACHED_MESSAGE, passwordProblem } from "./passwords";
+import { deleteService as removeService, insertService, lockClient, replaceService } from "./registry";
 import type { Ctx } from "./server";
-import { AUTH_SERVICE, type Client, type Service } from "./services";
+import { AUTH_SERVICE, parseService, serviceJson, type Client, type Service } from "./services";
 import {
   clearSessionCookie,
   endFamily,
@@ -731,24 +732,153 @@ export async function deleteInvite({ req, params, ip, deps: app }: Ctx<App>): Pr
 
 // ------------------------------------------------------- services and audit
 
+// The live secrets of every confidential client, newest first, by client id.
+async function liveSecrets(app: App): Promise<Map<string, Date[]>> {
+  const rows: { client_id: string; created_at: Date }[] = await app.sql`
+    SELECT client_id, created_at FROM client_secrets WHERE revoked_at IS NULL ORDER BY created_at DESC`;
+  const out = new Map<string, Date[]>();
+  for (const r of rows) out.set(r.client_id, [...(out.get(r.client_id) ?? []), r.created_at]);
+  return out;
+}
+
 export async function listServices({ req, deps: app }: Ctx<App>): Promise<Response> {
   const c = await caller(app, req, false);
   requireAdmin(c);
+  const secrets = await liveSecrets(app);
   return json(200, {
-    items: app.services.all().map((s) => ({
-      name: s.name,
-      roles: s.roles,
-      mfa_roles: s.mfaRoles,
-      signup: s.signup,
-      default_role: s.defaultRole,
-      manages_own_members: s.managesOwnMembers,
-      api_key_scopes: s.apiKeyScopes,
-      app_password_scopes: s.appPasswordScopes,
-      clients: s.clients.map((cl) => ({ id: cl.id, type: cl.type, redirect_uris: cl.redirectUris, post_logout_redirect_uris: cl.postLogoutRedirectUris })),
-      events_url: s.eventsUrl,
-    })),
+    items: app.services.all().map((s) => serviceJson(s, secrets)),
+    held: app.services.held.map((s) => serviceJson(s, secrets)),
     next: null,
   });
+}
+
+// A change to a service can add a redirect URI and make a secret, which is
+// enough to sign in to its app as anyone: it needs what a credential change
+// needs (§6.2).
+async function serviceAdmin(app: App, req: Request): Promise<Extract<Caller, { kind: "user" }>> {
+  const c = await caller(app, req, false);
+  requireAdmin(c);
+  await requireRecent(app, c.session);
+  return c;
+}
+
+// A registration's body: one service in the shape of §6, every problem listed.
+async function registration(app: App, req: Request): Promise<Service> {
+  const { service, problems } = parseService(await readJson(req), "database");
+  if (service.apiKeyScopes.length > 0 && !app.config.apiKeyPrefix) {
+    problems.push("api_key_scopes needs API_KEY_PREFIX, which this deployment hasn't set");
+  }
+  if (problems.length > 0) throw new HttpError(400, "invalid_request", problems.join("; "));
+  return service;
+}
+
+function uriList(uris: string[]): string {
+  return uris.length > 0 ? uris.join(", ") : "none";
+}
+
+export async function postService({ req, ip, deps: app }: Ctx<App>): Promise<Response> {
+  const c = await serviceAdmin(app, req);
+  const service = await registration(app, req);
+  const { held } = await transaction(app.sql, async (tx, after) => {
+    const r = await insertService(tx, app.services, service, c.session.userId);
+    await audit(tx, {
+      actor: c.session.userId,
+      action: "service.create",
+      ip,
+      detail: { service: service.name, clients: service.clients.map((cl) => cl.id), held: r.held },
+    });
+    const uris = service.clients.flatMap((cl) => [...cl.redirectUris, ...cl.postLogoutRedirectUris]);
+    adminAlert(app, after, c, `registered the service ${service.name}${r.held ? " as a held copy of the services file's" : ""}, with the redirect URIs ${uriList(uris)}`);
+    return r;
+  });
+  return json(201, { ...serviceJson(service), held });
+}
+
+// The service a change may touch: one registered on the admin page and in
+// effect. The file's change with the file, and a held copy is deleted, not
+// changed (§6.2).
+function registeredService(app: App, name: string, verb: "change" | "delete"): void {
+  const s = app.services.get(name);
+  if (s?.source === "builtin") throw new HttpError(409, "conflict", `auth's own service can't be ${verb === "change" ? "changed" : "deleted"}.`);
+  const heldCopy = app.services.held.some((h) => h.name === name);
+  if (verb === "delete" && heldCopy) return;
+  if (s?.source === "file") throw new HttpError(409, "conflict", `${name} is declared in the services file; ${verb} it there.`);
+  if (heldCopy) throw new HttpError(409, "conflict", `${name} is a held copy; delete it and copy the service again.`);
+  if (!s) throw new HttpError(404, "not_found", `There is no service "${name}".`);
+}
+
+export async function putService({ req, params, ip, deps: app }: Ctx<App>): Promise<Response> {
+  const c = await serviceAdmin(app, req);
+  const name = params.name!;
+  registeredService(app, name, "change");
+  const service = await registration(app, req);
+  if (service.name !== name) throw new HttpError(400, "invalid_request", "A service's name can't change.");
+  await transaction(app.sql, async (tx, after) => {
+    const change = await replaceService(tx, app.services, service);
+    if (change.fields.length === 0) return;
+    await audit(tx, {
+      actor: c.session.userId,
+      action: "service.update",
+      ip,
+      detail: { service: name, fields: change.fields, added_clients: change.addedClients, removed_clients: change.removedClients },
+    });
+    const added = change.addedUris.length > 0 ? `; added the redirect URIs ${uriList(change.addedUris)}` : "";
+    adminAlert(app, after, c, `changed the ${change.fields.join(", ")} of the service ${name}${added}`);
+  });
+  return json(200, { ...serviceJson(service), held: false });
+}
+
+export async function deleteService({ req, params, ip, deps: app }: Ctx<App>): Promise<Response> {
+  const c = await serviceAdmin(app, req);
+  const name = params.name!;
+  registeredService(app, name, "delete");
+  await transaction(app.sql, async (tx, after) => {
+    const { held } = await removeService(tx, app.services, name);
+    await audit(tx, { actor: c.session.userId, action: "service.delete", ip, detail: { service: name, held } });
+    adminAlert(app, after, c, held ? `deleted the held copy of the service ${name}` : `deleted the service ${name}, with every role, invitation and credential on it`);
+  });
+  return noContent();
+}
+
+// A registered service's confidential client. The services file's are out
+// of an admin's reach: their secrets come from the CLI (§6.2).
+function confidentialClient(app: App, id: string): { client: Client; service: Service } {
+  const client = app.services.client(id);
+  if (!client) throw new HttpError(404, "not_found", "No such client.");
+  if (client.type !== "confidential") throw new HttpError(409, "conflict", "A public client has no secret.");
+  const service = app.services.get(client.service)!;
+  if (service.source !== "database") {
+    throw new HttpError(409, "conflict", `${id} is a client of the services file: make its secret with the CLI (bun cli.ts client secret ${id}).`);
+  }
+  return { client, service };
+}
+
+// A new secret, shown once. The newest earlier one keeps working until the
+// old ones are retired, so the app can be moved to this one (§9.3).
+export async function postClientSecret({ req, params, ip, deps: app }: Ctx<App>): Promise<Response> {
+  const c = await serviceAdmin(app, req);
+  const { client, service } = confidentialClient(app, params.id!);
+  const secret = await transaction(app.sql, async (tx, after) => {
+    await lockClient(tx, service, client);
+    const s = await rotateClientSecret(tx, client.id);
+    await audit(tx, { actor: c.session.userId, action: "client.secret", ip, detail: { client: client.id } });
+    adminAlert(app, after, c, `made a new secret for the client ${client.id}`);
+    return s;
+  });
+  return json(201, { client_id: client.id, service: service.name, secret });
+}
+
+export async function retireOldSecrets({ req, params, ip, deps: app }: Ctx<App>): Promise<Response> {
+  const c = await serviceAdmin(app, req);
+  const { client, service } = confidentialClient(app, params.id!);
+  const retired = await transaction(app.sql, async (tx, after) => {
+    await lockClient(tx, service, client);
+    const n = await retireOldClientSecrets(tx, client.id);
+    await audit(tx, { actor: c.session.userId, action: "client.secret_retire", ip, detail: { client: client.id, retired: n } });
+    if (n > 0) adminAlert(app, after, c, `retired the old secrets of the client ${client.id}`);
+    return n;
+  });
+  return json(200, { client_id: client.id, retired });
 }
 
 export async function listAudit({ req, url, deps: app }: Ctx<App>): Promise<Response> {

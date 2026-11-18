@@ -3,7 +3,7 @@ import type { EncryptionKey } from "./crypto";
 import { connect } from "./db";
 import { parseFrom, parseSmtpUrl, type SmtpSettings } from "./mail";
 import { parseCidr, type Cidr } from "./net";
-import { isLoopbackHost, parseServices, type Services } from "./services";
+import { isLoopbackHost, parseServices, Services } from "./services";
 
 // The service's configuration, read from the environment once at start
 // (docs/DESIGN.md §11). Every problem is collected, so a misconfigured
@@ -15,6 +15,7 @@ export interface Config {
   databaseUrl: string;
   // The issuer's origin, e.g. https://auth.example.com: no path, no trailing slash.
   issuer: string;
+  // The services file's, when the deployment has one (docs/DESIGN.md §6.2).
   services: Services;
   // Encrypts everything new; the others only decrypt (§9.3).
   encryptionKey: EncryptionKey;
@@ -60,10 +61,9 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: Re
 
   const issuer = parseIssuer(value("ISSUER_URL"), problems);
 
-  let services: Services | null = null;
+  let services = new Services([]);
   const servicesFile = value("SERVICES_FILE");
-  if (!servicesFile) problems.push("SERVICES_FILE is required");
-  else {
+  if (servicesFile) {
     let text: string | null = null;
     try {
       text = readFile(servicesFile);
@@ -101,7 +101,7 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: Re
 
   const apiKeyPrefix = value("API_KEY_PREFIX") || null;
   if (apiKeyPrefix !== null && !API_KEY_PREFIX.test(apiKeyPrefix)) problems.push("API_KEY_PREFIX must match [a-z][a-z0-9]{1,15}");
-  if (apiKeyPrefix === null && services?.all().some((s) => s.apiKeyScopes.length > 0)) {
+  if (apiKeyPrefix === null && services.all().some((s) => s.apiKeyScopes.length > 0)) {
     problems.push("API_KEY_PREFIX is required when a service declares api_key_scopes");
   }
 
@@ -156,7 +156,7 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: Re
     else alertWebhookUrl = rawAlert;
   }
 
-  if (problems.length > 0 || !services) throw new ConfigError(problems);
+  if (problems.length > 0) throw new ConfigError(problems);
   return {
     port,
     databaseUrl,

@@ -104,7 +104,7 @@ describe.skipIf(!TEST_DATABASE_URL)("imports", () => {
         'line 6: unknown field "passwrod_hash"',
         "line 6: email is not an email address",
         "line 7: access gives wiki a role it doesn't declare",
-        "line 7: access names a service the services file doesn't have",
+        "line 7: access names a service auth doesn't have",
         "line 8: not valid JSON",
         "line 10: not a JSON object",
         "nothing imported: 10 problem(s)",

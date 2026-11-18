@@ -50,12 +50,17 @@ describe("loadConfig", () => {
     expect(load({ DATABASE_URL: url }).databaseUrl).toBe(url);
   });
 
+  test("without SERVICES_FILE, the services are auth's own and those registered on the admin page", () => {
+    const c = load({ SERVICES_FILE: undefined, API_KEY_PREFIX: undefined });
+    expect(c.services.all().map((s) => [s.name, s.source])).toEqual([["auth", "builtin"]]);
+    expect(c.apiKeyPrefix).toBeNull();
+  });
+
   test("lists every problem at once", () => {
     expect(problems({ PORT: "http" })).toEqual([
       'PORT must be a whole number from 1 to 65535, not "http"',
       "DATABASE_URL is required",
       "ISSUER_URL is required",
-      "SERVICES_FILE is required",
       "AUTH_ENCRYPTION_KEY is required",
       "SMTP_URL is required",
       "EMAIL_FROM is required",
@@ -230,6 +235,8 @@ describe("the services file (§6)", () => {
     ["an unknown signup", { signup: "public" }, 'service "wiki": signup must be "closed", "invite" or "open"'],
     ["open without default_role", { signup: "open" }, 'service "wiki": default_role must be one of roles when signup is open'],
     ["default_role when not open", { default_role: "member" }, 'service "wiki": default_role is only for signup "open"'],
+    ["a null default_role", { default_role: null }, 'service "wiki": default_role is only for signup "open"'],
+    ["a null events_url", { events_url: null }, 'service "wiki": events_url must be an http(s) URL without credentials or a fragment'],
     ["an unknown field", { mfa_role: [] }, 'service "wiki": unknown field "mfa_role"'],
     ["no clients", { clients: [] }, 'service "wiki": clients must be a non-empty array'],
     ["empty api_key_scopes", { api_key_scopes: [] }, 'service "wiki": api_key_scopes must be a non-empty array of names'],

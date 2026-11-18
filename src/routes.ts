@@ -23,7 +23,7 @@ export function buildRouter(): Router<App> {
     .add("/logout", "logout", { GET: logout });
 
   // Pages (§5.1 front channel)
-  r.add("/", "home", { GET: home })
+  r.add("/", "home", { GET: home }, { bare: true })
     .add("/login", "login", { GET: pages(getLogin), POST: pages(postLogin) })
     .add("/login/second-factor", "login.second_factor", { GET: pages(getSecondFactor), POST: pages(postSecondFactor) })
     .add("/login/passkey/options", "login.passkey_options", { POST: passkeyOptions })
@@ -37,8 +37,8 @@ export function buildRouter(): Router<App> {
     .add("/mfa-required", "mfa_required", { GET: pages(flows.getMfaRequired) })
     .add("/account", "account", { GET: accountPage })
     .add("/admin", "admin", { GET: adminPage })
-    .add("/assets/:file", "asset", { GET: assetRoute })
-    .add("/favicon.ico", "favicon", { GET: favicon });
+    .add("/assets/:file", "asset", { GET: assetRoute }, { bare: true })
+    .add("/favicon.ico", "favicon", { GET: favicon }, { bare: true });
 
   // Management API, self-service (§7.5)
   r.add("/v1/me", "v1.me", { GET: api.getMe, PATCH: api.patchMe, DELETE: api.deleteMe })
@@ -68,7 +68,10 @@ export function buildRouter(): Router<App> {
     .add("/v1/users/:user/api-keys/:id", "v1.user.api_key", { DELETE: api.apiKeys.revoke })
     .add("/v1/invites", "v1.invites", { GET: api.listInvites, POST: api.postInvite })
     .add("/v1/invites/:id", "v1.invite", { GET: api.getInvite, DELETE: api.deleteInvite })
-    .add("/v1/services", "v1.services", { GET: api.listServices })
+    .add("/v1/services", "v1.services", { GET: api.listServices, POST: api.postService })
+    .add("/v1/services/:name", "v1.service", { PUT: api.putService, DELETE: api.deleteService })
+    .add("/v1/clients/:id/secrets", "v1.client.secrets", { POST: api.postClientSecret })
+    .add("/v1/clients/:id/old-secrets", "v1.client.old_secrets", { DELETE: api.retireOldSecrets })
     .add("/v1/audit", "v1.audit", { GET: api.listAudit });
   return r;
 }

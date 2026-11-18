@@ -10,6 +10,7 @@ import { emitSessionEnded } from "./events";
 import { errorResponse, HttpError, json, readForm, redirect, single } from "./http";
 import { signJwt, verifyJwt } from "./jwt";
 import { parseIp, formatIp } from "./net";
+import { lockClient } from "./registry";
 import { messagePage } from "./pages/layout";
 import type { Ctx } from "./server";
 import type { Client, Service } from "./services";
@@ -229,6 +230,7 @@ async function codeGrant(app: App, client: Client, service: Service, form: URLSe
   if (!VERIFIER.test(verifier)) tokenError(400, "invalid_request", "code_verifier is malformed.");
 
   const result = await app.sql.begin(async (tx) => {
+    await lockClient(tx, service, client);
     // Marked used before anything else is checked, in one statement, so a
     // code is redeemed at most once however many requests race.
     const [row] = await tx`
@@ -237,6 +239,8 @@ async function codeGrant(app: App, client: Client, service: Service, form: URLSe
       RETURNING client_id, session_id, redirect_uri, code_challenge, nonce, expires_at > now() AS live`;
     if (!row || !row.live) return null;
     if (row.client_id !== client.id || row.redirect_uri !== redirectUri) return null;
+    // A URI removed since the code was issued redeems nothing (§6.2).
+    if (!client.redirectUris.includes(row.redirect_uri)) return null;
     if (!safeEqual(base64url(sha256(verifier)), row.code_challenge)) return null;
     const [s] = await tx`
       SELECT s.id, s.user_id, s.amr, extract(epoch FROM s.auth_time)::bigint AS auth_time
@@ -302,6 +306,7 @@ async function refreshGrant(app: App, client: Client, service: Service, form: UR
   const hash = sha256(presented.length <= 256 ? presented : "");
 
   const result = await transaction(app.sql, async (tx, after) => {
+    await lockClient(tx, service, client);
     const [found] = await tx`SELECT family_id FROM refresh_tokens WHERE token_hash = ${hash}`;
     if (!found) return null;
     await lockFamily(tx, found.family_id);
@@ -319,6 +324,9 @@ async function refreshGrant(app: App, client: Client, service: Service, form: UR
       if (!rt.session_id || !rt.session_live) return null;
       amr = rt.session_amr;
     } else {
+      // A token issued to a confidential client under this id is useless
+      // without that client's secret, whatever the id's type is now (§6.2).
+      if (rt.session_id) return null;
       // Rotation (OAuth 2.1 §4.3.1): a token used again past the grace
       // period means two parties hold it, so the whole family ends.
       if (rt.rotated && !rt.in_grace) {

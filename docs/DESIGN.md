@@ -1,6 +1,6 @@
 # Auth service: design
 
-Status: built through phase 3 (§13); phase 4 is designed, not built. Scope: an identity and access service that anyone can deploy in front of the apps they run. It covers who can sign in, how, and with what access to each app.
+Status: built through phase 3 (§13), with services registered on the admin page (§6.2); phase 4 is designed, not built. Scope: an identity and access service that anyone can deploy in front of the apps they run. It covers who can sign in, how, and with what access to each app.
 
 ## 1. Summary
 
