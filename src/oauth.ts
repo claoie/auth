@@ -322,6 +322,9 @@ async function refreshGrant(app: App, client: Client, service: Service, form: UR
       if (!rt.session_id || !rt.session_live) return null;
       amr = rt.session_amr;
     } else {
+      // A token issued to a confidential client under this id is useless
+      // without that client's secret, whatever the id's type is now (§6.2).
+      if (rt.session_id) return null;
       // Rotation (OAuth 2.1 §4.3.1): a token used again past the grace
       // period means two parties hold it, so the whole family ends.
       if (rt.rotated && !rt.in_grace) {

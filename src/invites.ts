@@ -74,13 +74,24 @@ export async function findLiveInvite(sql: SQL, token: string | null): Promise<In
 // role without lowering one the user already holds. The service learns who
 // accepted, so it can give them what it tied to the invitation.
 export async function acceptInvite(tx: SQL, app: App, token: string | null, userId: string, ip: string | null, after: After): Promise<InviteRow> {
+  const hash = sha256(token && token.length <= 128 ? token : "");
+  // The service's row is locked before the invitation's, the order in which
+  // a service's deletion takes them, so the two can't deadlock.
+  const [pending] = await tx`SELECT service FROM invites WHERE token_hash = ${hash} AND accepted_at IS NULL AND expires_at > now()`;
+  const known = pending ? app.services.get(pending.service) : undefined;
+  let service: Service | undefined;
+  try {
+    service = known ? await lockService(tx, known) : undefined;
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 404) throw new HttpError(409, "conflict", "This invitation is no longer valid.");
+    throw e;
+  }
   const [row] = await tx`
     UPDATE invites SET accepted_by = ${userId}, accepted_at = now()
-    WHERE token_hash = ${sha256(token && token.length <= 128 ? token : "")} AND accepted_at IS NULL AND expires_at > now()
+    WHERE token_hash = ${hash} AND accepted_at IS NULL AND expires_at > now()
     RETURNING id, email, service, role, invited_by, expires_at, accepted_by, accepted_at`;
   if (!row) throw new HttpError(409, "conflict", "This invitation has expired or was already used.");
-  const service = app.services.get(row.service);
-  if (!service || service.signup === "closed" || !service.roles.includes(row.role)) {
+  if (!service || service.name !== row.service || service.signup === "closed" || !service.roles.includes(row.role)) {
     throw new HttpError(409, "conflict", "This invitation is no longer valid.");
   }
   await putAccess(tx, app, { userId, service, role: row.role, actor: userId, ip, reason: "invite", neverLower: true }, after);

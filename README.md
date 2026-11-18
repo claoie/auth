@@ -97,7 +97,7 @@ The first admin comes from the CLI, which prints an activation link:
 
 ```sh
 bun cli.ts user create --username alice --email alice@example.com --access auth:admin --print-link
-bun cli.ts client secret wiki    # a confidential client's secret, printed once (the admin page makes them too)
+bun cli.ts client secret wiki    # a confidential client's secret, printed once (the admin page makes a registered client's)
 bun cli.ts import users users.jsonl --dry-run
 bun cli.ts help
 ```

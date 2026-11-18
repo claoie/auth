@@ -3,7 +3,9 @@ import { putAccess } from "./access";
 import { runCli } from "./cli";
 import { base64url, fromBase32, random, sha256 } from "./crypto";
 import { deliverDue } from "./events";
-import { lockClient } from "./registry";
+import { HttpError } from "./http";
+import { acceptInvite } from "./invites";
+import { lockClient, registeredProblems } from "./registry";
 import { hotp, stepAt } from "./totp";
 import { transaction } from "./tx";
 import { basic, Browser, makeUser, SERVICES, TEST_DATABASE_URL, testApp, testCopy, testDb, type TestApp, type TestDb } from "./testing/harness";
@@ -279,22 +281,64 @@ describe.skipIf(!TEST_DATABASE_URL)("registered services", () => {
     expect(access.items).toEqual([]);
   });
 
-  test("two secrets live at a time, and retiring keeps the newest; a client in the services file gets them the same way", async () => {
-    const first = t.secrets.notes!;
-    const s1 = await newSecret("notes");
-    expect((await introspectAs(t, "notes", first)).status).toBe(200);
-    const s2 = await newSecret("notes");
-    expect((await introspectAs(t, "notes", first)).status).toBe(401);
-    expect((await introspectAs(t, "notes", s1)).status).toBe(200);
+  test("two secrets live at a time, retiring keeps the newest, and no secret reaches the audit log, an alert or the log", async () => {
+    await register(definition("vault"));
+    const s1 = await newSecret("vault");
+    const s2 = await newSecret("vault");
+    expect((await introspectAs(t, "vault", s1)).status).toBe(200);
+    const s3 = await newSecret("vault");
+    expect((await introspectAs(t, "vault", s1)).status).toBe(401);
+    expect((await introspectAs(t, "vault", s2)).status).toBe(200);
 
-    const retired = await admin.api("DELETE", "/v1/clients/notes/old-secrets");
+    const retired = await admin.api("DELETE", "/v1/clients/vault/old-secrets");
     expect(retired.status).toBe(200);
-    expect(await retired.json()).toEqual({ client_id: "notes", retired: 1 });
-    expect((await introspectAs(t, "notes", s1)).status).toBe(401);
-    expect((await introspectAs(t, "notes", s2)).status).toBe(200);
+    expect(await retired.json()).toEqual({ client_id: "vault", retired: 1 });
+    expect((await introspectAs(t, "vault", s2)).status).toBe(401);
+    expect((await introspectAs(t, "vault", s3)).status).toBe(200);
     const listed = (await (await admin.api("GET", "/v1/services")).json()) as any;
-    expect(listed.items.find((s: any) => s.name === "notes").clients[0].secrets).toHaveLength(1);
-    t.secrets.notes = s2;
+    expect(listed.items.find((s: any) => s.name === "vault").clients[0].secrets).toHaveLength(1);
+
+    const audits = (await db.sql`SELECT detail::text AS d FROM audit WHERE action LIKE 'client.%'`) as { d: string }[];
+    expect(audits.length).toBeGreaterThanOrEqual(4);
+    for (const secret of [s1, s2, s3]) {
+      for (const where of [audits.map((a) => a.d), t.alerts, t.logs]) expect(where.join("\n")).not.toContain(secret);
+    }
+  });
+
+  test("a services file client's secrets come from the CLI, out of an admin's reach", async () => {
+    for (const [method, path] of [
+      ["POST", "/v1/clients/notes/secrets"],
+      ["DELETE", "/v1/clients/notes/old-secrets"],
+    ] as const) {
+      const res = await admin.api(method, path, method === "POST" ? {} : undefined);
+      expect([res.status, await errorOf(res)]).toEqual([409, "notes is a client of the services file: make its secret with the CLI (bun cli.ts client secret notes)."]);
+    }
+    expect((await introspectAs(t, "notes", t.secrets.notes!)).status).toBe(200);
+  });
+
+  test("a held copy keeps a file client's type", async () => {
+    const notes = SERVICES.services.find((s) => s.name === "notes")!;
+    const res = await register({ ...notes, clients: [{ id: "notes", type: "public", redirect_uris: ["com.example.notes:/cb"] }] });
+    expect([res.status, await errorOf(res)]).toEqual([400, "The services file's client notes is confidential, and a client's type can't change."]);
+    expect(await db.sql`SELECT 1 FROM services WHERE name = 'notes'`).toHaveLength(0);
+  });
+
+  test("a refresh token issued to a confidential client is refused when its id comes back as a public client", async () => {
+    // notes leaves the services file, and an admin registers a public client under its id.
+    const dropped = testCopy(t, {}, { services: SERVICES.services.filter((s) => s.name !== "notes") });
+    const { b } = await signIn(t, "nina", { notes: "reader" });
+    const code = await codeFor(b, "notes", "https://notes.example.com/auth/callback");
+    const tokens = (await (await exchange(t, "notes", t.secrets.notes!, code, "https://notes.example.com/auth/callback")).json()) as any;
+    expect(tokens.refresh_token).toBeString();
+
+    const as = new Browser(dropped);
+    for (const [k, v] of admin.cookies) as.cookies.set(k, v);
+    const reborn = definition("notes", { roles: ["reader", "writer"], mfa_roles: [], clients: [{ id: "notes", type: "public", redirect_uris: ["com.example.notes:/cb"] }] });
+    expect((await register(reborn, as)).status).toBe(201);
+    const res = await post(dropped, "/oauth/token", { grant_type: "refresh_token", client_id: "notes", refresh_token: tokens.refresh_token });
+    expect(((await res.json()) as any).error).toBe("invalid_grant");
+    // On the copy whose file still declares notes, the registration is a held copy.
+    expect((await admin.api("DELETE", "/v1/services/notes")).status).toBe(204);
   });
 
   test("a held copy: the file's service stays in effect, the copy takes over once the file drops it, and nothing granted is lost", async () => {
@@ -312,7 +356,7 @@ describe.skipIf(!TEST_DATABASE_URL)("registered services", () => {
 
     // A copy started with a services file that no longer declares notes.
     const after = testCopy(t, {}, { services: SERVICES.services.filter((s) => s.name !== "notes") });
-    const { b } = await signIn(t, "kate", { notes: "reader" });
+    const { b, id: kate } = await signIn(t, "kate", { notes: "reader" });
     const moved = new Browser(after);
     for (const [k, v] of b.cookies) moved.cookies.set(k, v);
     const code = await codeFor(moved, "notes", "https://notes.example.com/auth/callback");
@@ -321,7 +365,7 @@ describe.skipIf(!TEST_DATABASE_URL)("registered services", () => {
     // Deleting the held copy deletes only the copy.
     expect((await admin.api("DELETE", "/v1/services/notes")).status).toBe(204);
     expect(t.alerts.at(-1)).toBe("auth: root deleted the held copy of the service notes");
-    expect(await db.sql`SELECT 1 FROM access WHERE service = 'notes'`).toHaveLength(1);
+    expect(await db.sql`SELECT 1 FROM access WHERE service = 'notes' AND user_id = ${kate}`).toHaveLength(1);
     expect((await introspectAs(t, "notes", t.secrets.notes!)).status).toBe(200);
     expect(((await (await admin.api("GET", "/v1/services")).json()) as any).held).toEqual([]);
   });
@@ -371,6 +415,146 @@ describe.skipIf(!TEST_DATABASE_URL)("registered services", () => {
     const out: string[] = [];
     expect(await runCli(["client", "secret", "kiosk"], { app: t.app, mailer: { send: async () => {} }, out: (l) => out.push(l) })).toBe(0);
     expect((await introspectAs(t, "kiosk", out[0]!)).status).toBe(200);
+  });
+
+  // Holds a lock the way a change to a service does, starts a request, and
+  // lets the change finish after the request had time to reach its own lock.
+  async function whileChanging(hold: (tx: any) => Promise<void>, change: (tx: any) => Promise<void>, request: () => Promise<Response>): Promise<Response> {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let held!: () => void;
+    const locked = new Promise<void>((r) => (held = r));
+    const changing = db.sql.begin(async (tx) => {
+      await hold(tx);
+      held();
+      await gate;
+      await change(tx);
+      await tx`UPDATE services_revision SET revision = revision + 1`;
+    });
+    await locked;
+    const pending = request();
+    await Bun.sleep(150);
+    release();
+    await changing;
+    return pending;
+  }
+
+  describe("what the endpoints check under the service's or client's lock", () => {
+    test("a refresh in flight when its public client is removed is refused", async () => {
+      await register(definition("relay", { clients: [{ id: "relay-ios", type: "public", redirect_uris: ["com.example.relay:/cb"] }] }));
+      const { b } = await signIn(t, "olga", { relay: "member" });
+      const code = await codeFor(b, "relay-ios", "com.example.relay:/cb");
+      const tokens = (await (
+        await post(t, "/oauth/token", { grant_type: "authorization_code", client_id: "relay-ios", code, redirect_uri: "com.example.relay:/cb", code_verifier: verifier })
+      ).json()) as any;
+      const res = await whileChanging(
+        (tx) => tx`SELECT id FROM clients WHERE id = 'relay-ios' FOR UPDATE`,
+        (tx) => tx`DELETE FROM clients WHERE id = 'relay-ios'`,
+        () => post(t, "/oauth/token", { grant_type: "refresh_token", client_id: "relay-ios", refresh_token: tokens.refresh_token }),
+      );
+      expect([res.status, ((await res.json()) as any).error]).toEqual([401, "invalid_client"]);
+    });
+
+    test("a code exchanged while its client is removed gets no tokens", async () => {
+      await register(definition("hatch"));
+      const secret = await newSecret("hatch");
+      const { b } = await signIn(t, "pavel", { hatch: "member" });
+      const code = await codeFor(b, "hatch", "https://hatch.example.com/auth/callback");
+      const res = await whileChanging(
+        (tx) => tx`SELECT id FROM clients WHERE id = 'hatch' FOR UPDATE`,
+        (tx) => tx`DELETE FROM clients WHERE id = 'hatch'`,
+        () => exchange(t, "hatch", secret, code, "https://hatch.example.com/auth/callback"),
+      );
+      expect([res.status, ((await res.json()) as any).error]).toEqual([401, "invalid_client"]);
+    });
+
+    test("an invitation sent while the service closes to sign-up is refused", async () => {
+      await register(definition("club"));
+      const csrf = await admin.csrf();
+      const res = await whileChanging(
+        (tx) => tx`SELECT name FROM services WHERE name = 'club' FOR UPDATE`,
+        (tx) => tx`UPDATE services SET signup = 'closed' WHERE name = 'club'`,
+        () => admin.api("POST", "/v1/invites", { email: "late@example.com", service: "club", role: "member" }, { "X-CSRF-Token": csrf }),
+      );
+      expect(res.status).toBe(409);
+      expect(await db.sql`SELECT 1 FROM invites WHERE service = 'club'`).toHaveLength(0);
+    });
+
+    test("an API key made while its scope is removed is refused", async () => {
+      await register(definition("depot", { api_key_scopes: ["depot:read"] }));
+      const { b } = await signIn(t, "quinn", { depot: "member" });
+      const csrf = await b.csrf();
+      const res = await whileChanging(
+        (tx) => tx`SELECT name FROM services WHERE name = 'depot' FOR UPDATE`,
+        (tx) => tx`UPDATE services SET api_key_scopes = '{}' WHERE name = 'depot'`,
+        () => b.api("POST", "/v1/me/api-keys", { name: "late", service: "depot", scopes: ["depot:read"] }, { "X-CSRF-Token": csrf }),
+      );
+      expect([res.status, await errorOf(res)]).toEqual([400, "depot takes no API keys."]);
+    });
+
+    test("accepting an invitation while its service is deleted doesn't deadlock: the acceptance is refused", async () => {
+      await register(definition("guild"));
+      const id = await makeUser(t, { username: "rosa", password: PW });
+      expect((await admin.api("POST", "/v1/invites", { email: "rosa@example.com", service: "guild", role: "member" })).status).toBe(201);
+      const token = /invite\?token=([A-Za-z0-9_-]+)/.exec(t.mails.filter((m) => m.to === "rosa@example.com").at(-1)!.text)![1]!;
+      const current = await t.app.prepare();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let held!: () => void;
+      const locked = new Promise<void>((r) => (held = r));
+      // A deletion's order: the service's row, then its invitations.
+      const deleting = db.sql.begin(async (tx) => {
+        await tx`SELECT name FROM services WHERE name = 'guild' FOR UPDATE`;
+        held();
+        await gate;
+        await tx`DELETE FROM invites WHERE service = 'guild'`;
+        await tx`DELETE FROM services WHERE name = 'guild'`;
+      });
+      await locked;
+      const accepting = transaction(db.sql, (tx, after) => acceptInvite(tx, current, token, id, null, after)).then(
+        () => "accepted",
+        (e) => (e instanceof HttpError ? `${e.status} ${e.description}` : `${(e as Error).name}`),
+      );
+      await Bun.sleep(150);
+      release();
+      await deleting;
+      expect(await accepting).toBe("409 This invitation is no longer valid.");
+    });
+  });
+
+  test("a copy without API_KEY_PREFIX names each registered service that needs it", async () => {
+    await register(definition("meter", { api_key_scopes: ["meter:read"] }));
+    expect(await registeredProblems(db.sql, "testkey")).toEqual([]);
+    expect(await registeredProblems(db.sql, null)).toContain("API_KEY_PREFIX is required: the registered service meter declares api_key_scopes");
+  });
+
+  test("registrations are capped so every copy can hold them all", async () => {
+    const many = (n: number, f: (i: number) => unknown) => Array.from({ length: n }, (_, i) => f(i));
+    const cases: [Record<string, unknown>, string][] = [
+      [{ roles: many(33, (i) => `r${i}`), mfa_roles: [] }, "roles has more than 32 names"],
+      [{ api_key_scopes: many(33, (i) => `s${i}`) }, "api_key_scopes has more than 32 names"],
+      [{ clients: many(6, (i) => ({ id: `cap${i}`, type: "confidential", redirect_uris: ["https://cap.example.com/cb"] })) }, "clients has more than 5"],
+      [
+        { clients: [{ id: "cap", type: "confidential", redirect_uris: many(11, (i) => `https://cap.example.com/${i}`) }] },
+        "clients[0]: redirect_uris has more than 10 URIs",
+      ],
+      [
+        { clients: [{ id: "cap", type: "confidential", redirect_uris: [`https://cap.example.com/${"x".repeat(1001)}`] }] },
+        "clients[0]: redirect_uris has a URI longer than 1024 characters",
+      ],
+    ];
+    for (const [over, problem] of cases) {
+      const res = await register(definition("cap", over));
+      expect([res.status, await errorOf(res)]).toEqual([400, problem]);
+    }
+    const [{ n }] = await db.sql`SELECT count(*)::int AS n FROM services`;
+    await db.sql`
+      INSERT INTO services (name, roles, mfa_roles, signup, created_by)
+      SELECT 'filler-' || g, '{member}', '{}', 'closed', 'test' FROM generate_series(1, ${100 - n}) g`;
+    const full = await register(definition("cap"));
+    expect([full.status, await errorOf(full)]).toEqual([409, "100 services are registered, the most there can be; delete one first."]);
+    await db.sql`DELETE FROM services WHERE name LIKE 'filler-%'`;
+    expect((await register(definition("cap"))).status).toBe(201);
   });
 
   describe("refusals", () => {

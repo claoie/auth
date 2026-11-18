@@ -133,17 +133,25 @@ export function merge(file: Service[], registered: Service[]): { services: Servi
 // starts by bumping the revision: that serializes every change to the
 // services, and makes every copy reload them at its next request.
 
+// So every copy can hold every service (§6).
+const MAX_REGISTERED = 100;
+
 async function bump(tx: SQL): Promise<void> {
   await tx`UPDATE services_revision SET revision = revision + 1`;
 }
 
 // A client id is free for `service` unless another service uses it: a
-// registered one, held or not, or one in the file.
-async function requireFreeClientId(tx: SQL, current: Services, service: string, id: string): Promise<void> {
-  const [row] = await tx`SELECT service FROM clients WHERE id = ${id}`;
-  const fileOwner = current.client(id);
-  const owner = row?.service ?? (fileOwner && current.get(fileOwner.service)?.source === "file" ? fileOwner.service : null);
-  if (owner !== null && owner !== service) throw new HttpError(409, "conflict", `The client id "${id}" is used by ${owner}.`);
+// registered one, held or not, or one in the file. A held copy of a file
+// service keeps each of its clients' types.
+async function requireFreeClientId(tx: SQL, current: Services, service: string, c: Client): Promise<void> {
+  const [row] = await tx`SELECT service FROM clients WHERE id = ${c.id}`;
+  const inEffect = current.client(c.id);
+  const fileClient = inEffect && current.get(inEffect.service)?.source === "file" ? inEffect : null;
+  const owner = row?.service ?? fileClient?.service ?? null;
+  if (owner !== null && owner !== service) throw new HttpError(409, "conflict", `The client id "${c.id}" is used by ${owner}.`);
+  if (fileClient && fileClient.type !== c.type) {
+    throw new HttpError(400, "invalid_request", `The services file's client ${c.id} is ${fileClient.type}, and a client's type can't change.`);
+  }
 }
 
 async function insertClient(tx: SQL, service: string, c: Client): Promise<void> {
@@ -157,7 +165,9 @@ export async function insertService(tx: SQL, current: Services, s: Service, acto
   await bump(tx);
   const [taken] = await tx`SELECT 1 FROM services WHERE name = ${s.name}`;
   if (taken) throw new HttpError(409, "conflict", `A service named ${s.name} is registered already.`);
-  for (const c of s.clients) await requireFreeClientId(tx, current, s.name, c.id);
+  const [count] = await tx`SELECT count(*)::int AS n FROM services`;
+  if (count.n >= MAX_REGISTERED) throw new HttpError(409, "conflict", `${MAX_REGISTERED} services are registered, the most there can be; delete one first.`);
+  for (const c of s.clients) await requireFreeClientId(tx, current, s.name, c);
   await tx`
     INSERT INTO services (name, roles, mfa_roles, signup, default_role, manages_own_members, api_key_scopes, app_password_scopes, events_url, created_by)
     VALUES (${s.name}, ${tx.array(s.roles, "TEXT")}, ${tx.array(s.mfaRoles, "TEXT")}, ${s.signup}, ${s.defaultRole}, ${s.managesOwnMembers},
@@ -190,7 +200,7 @@ export async function replaceService(tx: SQL, current: Services, s: Service): Pr
 
   for (const c of s.clients) {
     const old = before.get(c.id);
-    if (!old) await requireFreeClientId(tx, current, s.name, c.id);
+    if (!old) await requireFreeClientId(tx, current, s.name, c);
     else if (old.type !== c.type) {
       throw new HttpError(400, "invalid_request", `A client's type can't change: add a ${c.type} client with a new id, and remove ${c.id}.`);
     }
@@ -294,6 +304,14 @@ async function retireClient(tx: SQL, id: string): Promise<void> {
   await tx`UPDATE client_secrets SET revoked_at = now() WHERE client_id = ${id} AND revoked_at IS NULL`;
   await tx`UPDATE refresh_tokens SET revoked_at = now() WHERE client_id = ${id} AND revoked_at IS NULL`;
   await tx`DELETE FROM auth_codes WHERE client_id = ${id}`;
+}
+
+// What a copy can't serve under its configuration, checked at start: a
+// registered service with API key scopes needs API_KEY_PREFIX (§6.2).
+export async function registeredProblems(sql: SQL, apiKeyPrefix: string | null): Promise<string[]> {
+  if (apiKeyPrefix !== null) return [];
+  const rows: { name: string }[] = await sql`SELECT name FROM services WHERE api_key_scopes <> '{}' ORDER BY name`;
+  return rows.map((r) => `API_KEY_PREFIX is required: the registered service ${r.name} declares api_key_scopes`);
 }
 
 // ------------------------------------------------------------------- locks

@@ -840,11 +840,17 @@ export async function deleteService({ req, params, ip, deps: app }: Ctx<App>): P
   return noContent();
 }
 
+// A registered service's confidential client. The services file's are out
+// of an admin's reach: their secrets come from the CLI (§6.2).
 function confidentialClient(app: App, id: string): { client: Client; service: Service } {
   const client = app.services.client(id);
   if (!client) throw new HttpError(404, "not_found", "No such client.");
   if (client.type !== "confidential") throw new HttpError(409, "conflict", "A public client has no secret.");
-  return { client, service: app.services.get(client.service)! };
+  const service = app.services.get(client.service)!;
+  if (service.source !== "database") {
+    throw new HttpError(409, "conflict", `${id} is a client of the services file: make its secret with the CLI (bun cli.ts client secret ${id}).`);
+  }
+  return { client, service };
 }
 
 // A new secret, shown once. The newest earlier one keeps working until the

@@ -156,12 +156,18 @@ export function parseServices(text: string): { services: Services; problems: str
   return { services: new Services(services), problems };
 }
 
+// A registration's limits (§6), so every copy can hold every service.
+export const REGISTRATION_LIMITS = { names: 32, clients: 5, uris: 10, uriLength: 1024 };
+
 // One service in the shape of §6, from the file or a registration's body.
 // Every problem is listed; rules across services (unique names and client
-// ids) are the caller's.
+// ids) are the caller's. A registration may write [] or null for a field the
+// file leaves out, as GET /v1/services answers, and is capped.
 export function parseService(raw: unknown, source: "file" | "database"): { service: Service; problems: string[] } {
   const problems: string[] = [];
   const p = (msg: string) => problems.push(msg);
+  const registered = source === "database";
+  const absent = (v: unknown) => v === undefined || (registered && v === null);
   if (!isObject(raw)) {
     p("must be an object");
     raw = {};
@@ -183,13 +189,20 @@ export function parseService(raw: unknown, source: "file" | "database"): { servi
   if (signup === "open") {
     if (typeof r.default_role !== "string" || !roles.includes(r.default_role)) p("default_role must be one of roles when signup is open");
     else defaultRole = r.default_role;
-  } else if (r.default_role !== undefined && r.default_role !== null) {
+  } else if (!absent(r.default_role)) {
     p('default_role is only for signup "open"');
   }
 
   if (r.manages_own_members !== undefined && typeof r.manages_own_members !== "boolean") p("manages_own_members must be true or false");
-  const apiKeyScopes = stringList(r.api_key_scopes, SCOPE, "api_key_scopes", p, { required: false, nonEmpty: source === "file" });
-  const appPasswordScopes = stringList(r.app_password_scopes, SCOPE, "app_password_scopes", p, { required: false, nonEmpty: source === "file" });
+  const apiKeyScopes = stringList(r.api_key_scopes, SCOPE, "api_key_scopes", p, { required: false, nonEmpty: !registered });
+  const appPasswordScopes = stringList(r.app_password_scopes, SCOPE, "app_password_scopes", p, { required: false, nonEmpty: !registered });
+  if (registered) {
+    const L = REGISTRATION_LIMITS;
+    for (const [field, list] of [["roles", roles], ["api_key_scopes", apiKeyScopes], ["app_password_scopes", appPasswordScopes]] as const) {
+      if (list.length > L.names) p(`${field} has more than ${L.names} names`);
+    }
+    if (Array.isArray(r.clients) && r.clients.length > L.clients) p(`clients has more than ${L.clients}`);
+  }
 
   const clients: Client[] = [];
   const ids = new Set<string>();
@@ -208,6 +221,13 @@ export function parseService(raw: unknown, source: "file" | "database"): { servi
       const isPublic = type === "public";
       const redirectUris = uriList(c.redirect_uris, isPublic, "redirect_uris", cp, true);
       const postLogout = uriList(c.post_logout_redirect_uris, isPublic, "post_logout_redirect_uris", cp, false);
+      if (registered) {
+        const L = REGISTRATION_LIMITS;
+        for (const [field, list] of [["redirect_uris", redirectUris], ["post_logout_redirect_uris", postLogout]] as const) {
+          if (list.length > L.uris) cp(`${field} has more than ${L.uris} URIs`);
+          if (list.some((u) => u.length > L.uriLength)) cp(`${field} has a URI longer than ${L.uriLength} characters`);
+        }
+      }
       clients.push({
         id,
         type: isPublic ? "public" : "confidential",
@@ -219,10 +239,12 @@ export function parseService(raw: unknown, source: "file" | "database"): { servi
   }
 
   let eventsUrl: string | null = null;
-  if (r.events_url !== undefined && r.events_url !== null) {
+  if (!absent(r.events_url)) {
     const url = typeof r.events_url === "string" ? parseUrl(r.events_url) : null;
     if (!url || (url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password || url.hash) {
       p("events_url must be an http(s) URL without credentials or a fragment");
+    } else if (registered && r.events_url.length > REGISTRATION_LIMITS.uriLength) {
+      p(`events_url is longer than ${REGISTRATION_LIMITS.uriLength} characters`);
     } else eventsUrl = r.events_url;
   }
 

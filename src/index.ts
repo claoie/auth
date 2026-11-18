@@ -7,6 +7,7 @@ import { rotateKeys } from "./keys";
 import { smtpMailer } from "./mail";
 import { migrate } from "./migrate";
 import { clientIp } from "./net";
+import { registeredProblems } from "./registry";
 import { buildRouter } from "./routes";
 import { handle } from "./server";
 
@@ -56,6 +57,13 @@ async function start() {
   for (let attempt = 1; !stopping; attempt++) {
     try {
       await migrate(sql, (line) => console.log(line));
+      // The registered services, checked against this configuration as the
+      // file's are at load.
+      const problems = await registeredProblems(sql, config.apiKeyPrefix);
+      if (problems.length > 0) {
+        console.error(new ConfigError(problems).message);
+        process.exit(1);
+      }
       await rotateKeys(sql, app.crypt);
       await app.keys.refresh(true);
       break;

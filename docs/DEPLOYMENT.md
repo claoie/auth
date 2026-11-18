@@ -134,7 +134,8 @@ with its own configuration and mounted read-only, for example at
 `/etc/auth/services.json`, named by `SERVICES_FILE`. `docs/DESIGN.md` §6
 defines its fields; the server checks it at start and refuses to start on
 any problem, listing all of them. Its services are read-only on the admin
-page, out of an admin's reach, and change with a restart.
+page and change with a restart, and their clients' secrets come from the
+CLI, so they are out of an admin's reach.
 
 To move a service from the file to the admin page with no outage, use
 **Copy to the admin page** on its card: the copy is held while the file
@@ -157,10 +158,12 @@ email isn't working yet). The admin then sets a password, signs in and
 enrolls a second factor, which `auth:admin` always requires, and registers
 services from there.
 
-A confidential client's secret is made on the admin page, or with
-`bun cli.ts client secret wiki`, which prints it once. To rotate one, make a
-new one, move the app to it, then retire the old one: **Retire older** on
-the admin page, or `bun cli.ts client retire-old-secrets wiki`.
+A registered service's confidential client gets its secret on the admin
+page; a services file client gets its secret from
+`bun cli.ts client secret wiki`, which prints it once (the CLI makes either
+kind). To rotate one, make a new one, move the app to it, then retire the
+old one: **Retire older** on the admin page, or
+`bun cli.ts client retire-old-secrets wiki`.
 
 ### Rotating the encryption key
 

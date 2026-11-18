@@ -902,7 +902,8 @@
     var source = s.source === "database" ? (held ? tag("held", "attention") : tag("admin page")) : s.source === "file" ? tag("services file") : tag("built in");
     var clients = s.clients.map(function (c) {
       var actions = null;
-      if (c.type === "confidential" && !held) {
+      // A services file client's secret comes from the CLI (docs/DESIGN.md §6.2).
+      if (c.type === "confidential" && !held && s.source === "database") {
         var make = el("button", { type: "button", class: "secondary sm" }, icon("key"), "New secret");
         make.addEventListener("click", function () {
           var live = (c.secrets || []).length;
@@ -946,6 +947,7 @@
               )
             : null,
           c.type === "confidential" && !held ? el("p", { class: "hint" }, secretsLine(c)) : null,
+          c.type === "confidential" && s.source === "file" ? el("p", { class: "hint" }, "Its secret comes from the CLI: ", el("code", {}, "bun cli.ts client secret " + c.id)) : null,
         ),
         actions,
       );
