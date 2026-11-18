@@ -239,6 +239,8 @@ async function codeGrant(app: App, client: Client, service: Service, form: URLSe
       RETURNING client_id, session_id, redirect_uri, code_challenge, nonce, expires_at > now() AS live`;
     if (!row || !row.live) return null;
     if (row.client_id !== client.id || row.redirect_uri !== redirectUri) return null;
+    // A URI removed since the code was issued redeems nothing (§6.2).
+    if (!client.redirectUris.includes(row.redirect_uri)) return null;
     if (!safeEqual(base64url(sha256(verifier)), row.code_challenge)) return null;
     const [s] = await tx`
       SELECT s.id, s.user_id, s.amr, extract(epoch FROM s.auth_time)::bigint AS auth_time

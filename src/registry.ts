@@ -1,6 +1,9 @@
 import type { SQL } from "bun";
+import type { App } from "./app";
+import { audit } from "./audit";
 import { HttpError } from "./http";
 import { Services, type Client, type Service, type Signup } from "./services";
+import { transaction } from "./tx";
 
 // The services in effect (docs/DESIGN.md §6.2): the services file's, read at
 // start, and those registered on the admin page, stored here. A copy keeps
@@ -168,12 +171,13 @@ export async function insertService(tx: SQL, current: Services, s: Service, acto
   const [count] = await tx`SELECT count(*)::int AS n FROM services`;
   if (count.n >= MAX_REGISTERED) throw new HttpError(409, "conflict", `${MAX_REGISTERED} services are registered, the most there can be; delete one first.`);
   for (const c of s.clients) await requireFreeClientId(tx, current, s.name, c);
+  const held = current.get(s.name)?.source === "file";
   await tx`
-    INSERT INTO services (name, roles, mfa_roles, signup, default_role, manages_own_members, api_key_scopes, app_password_scopes, events_url, created_by)
+    INSERT INTO services (name, roles, mfa_roles, signup, default_role, manages_own_members, api_key_scopes, app_password_scopes, events_url, held, created_by)
     VALUES (${s.name}, ${tx.array(s.roles, "TEXT")}, ${tx.array(s.mfaRoles, "TEXT")}, ${s.signup}, ${s.defaultRole}, ${s.managesOwnMembers},
-            ${tx.array(s.apiKeyScopes, "TEXT")}, ${tx.array(s.appPasswordScopes, "TEXT")}, ${s.eventsUrl}, ${actor})`;
+            ${tx.array(s.apiKeyScopes, "TEXT")}, ${tx.array(s.appPasswordScopes, "TEXT")}, ${s.eventsUrl}, ${held}, ${actor})`;
   for (const c of s.clients) await insertClient(tx, s.name, c);
-  return { held: current.get(s.name)?.source === "file" };
+  return { held };
 }
 
 export interface ServiceChange {
@@ -222,10 +226,14 @@ export async function replaceService(tx: SQL, current: Services, s: Service): Pr
   }
   const addedClients: string[] = [];
   for (const c of s.clients) {
-    if (before.has(c.id)) {
+    const old = before.get(c.id);
+    if (old) {
       await tx`
         UPDATE clients SET redirect_uris = ${tx.array(c.redirectUris, "TEXT")}, post_logout_redirect_uris = ${tx.array(c.postLogoutRedirectUris, "TEXT")}
         WHERE id = ${c.id}`;
+      // A code issued for a URI that's gone goes with it.
+      const dropped = old.redirect_uris.filter((u) => !c.redirectUris.includes(u));
+      if (dropped.length > 0) await tx`DELETE FROM auth_codes WHERE client_id = ${c.id} AND redirect_uri IN ${tx(dropped)}`;
     } else {
       await insertClient(tx, s.name, c);
       addedClients.push(c.id);
@@ -312,6 +320,35 @@ export async function registeredProblems(sql: SQL, apiKeyPrefix: string | null):
   if (apiKeyPrefix !== null) return [];
   const rows: { name: string }[] = await sql`SELECT name FROM services WHERE api_key_scopes <> '{}' ORDER BY name`;
   return rows.map((r) => `API_KEY_PREFIX is required: the registered service ${r.name} declares api_key_scopes`);
+}
+
+// At start: remembers which registered services this copy holds, and audits
+// and alerts each held copy it finds in effect, naming its redirect URIs
+// (§6.2). Copies starting at once each update different rows, so each
+// take-over is reported once.
+export async function noteHeld(app: App): Promise<string[]> {
+  const current = (await app.prepare()).services;
+  const held = current.held.map((s) => s.name);
+  const inEffect = current.all().filter((s) => s.source === "database");
+  return transaction(app.sql, async (tx, after) => {
+    if (held.length > 0) await tx`UPDATE services SET held = true WHERE name IN ${tx(held)} AND NOT held`;
+    if (inEffect.length === 0) return [];
+    const rows: { name: string }[] = await tx`
+      UPDATE services SET held = false WHERE name IN ${tx(inEffect.map((s) => s.name))} AND held RETURNING name`;
+    const tookEffect = inEffect.filter((s) => rows.some((r) => r.name === s.name));
+    for (const s of tookEffect) {
+      const uris = redirectUrisOf(s);
+      await audit(tx, { actor: null, action: "service.held_copy_in_effect", detail: { service: s.name, redirect_uris: uris } });
+      after(() =>
+        app.alert(`auth: the held copy of the service ${s.name} took effect, the services file no longer declaring it; redirect URIs: ${uris.length ? uris.join(", ") : "none"}`),
+      );
+    }
+    return tookEffect.map((s) => s.name);
+  });
+}
+
+export function redirectUrisOf(s: Service): string[] {
+  return [...new Set(s.clients.flatMap((c) => [...c.redirectUris, ...c.postLogoutRedirectUris]))];
 }
 
 // ------------------------------------------------------------------- locks

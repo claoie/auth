@@ -7,7 +7,7 @@ import { rotateKeys } from "./keys";
 import { smtpMailer } from "./mail";
 import { migrate } from "./migrate";
 import { clientIp } from "./net";
-import { registeredProblems } from "./registry";
+import { noteHeld, registeredProblems } from "./registry";
 import { buildRouter } from "./routes";
 import { handle } from "./server";
 
@@ -66,6 +66,7 @@ async function start() {
       }
       await rotateKeys(sql, app.crypt);
       await app.keys.refresh(true);
+      await noteHeld(app);
       break;
     } catch (e) {
       console.log(`start: database not ready (${e instanceof Error ? e.name : typeof e}), retrying`);

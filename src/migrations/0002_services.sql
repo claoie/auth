@@ -11,6 +11,9 @@ CREATE TABLE services (
   api_key_scopes      text[] NOT NULL DEFAULT '{}',
   app_password_scopes text[] NOT NULL DEFAULT '{}',
   events_url          text,
+  -- Held at the last start (§6.2): a copy that starts with it in effect
+  -- after that alerts it.
+  held                boolean NOT NULL DEFAULT false,
   created_by          text NOT NULL,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now()

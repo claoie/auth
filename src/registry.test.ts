@@ -5,7 +5,7 @@ import { base64url, fromBase32, random, sha256 } from "./crypto";
 import { deliverDue } from "./events";
 import { HttpError } from "./http";
 import { acceptInvite } from "./invites";
-import { lockClient, registeredProblems } from "./registry";
+import { lockClient, noteHeld, registeredProblems } from "./registry";
 import { hotp, stepAt } from "./totp";
 import { transaction } from "./tx";
 import { basic, Browser, makeUser, SERVICES, TEST_DATABASE_URL, testApp, testCopy, testDb, type TestApp, type TestDb } from "./testing/harness";
@@ -368,6 +368,52 @@ describe.skipIf(!TEST_DATABASE_URL)("registered services", () => {
     expect(await db.sql`SELECT 1 FROM access WHERE service = 'notes' AND user_id = ${kate}`).toHaveLength(1);
     expect((await introspectAs(t, "notes", t.secrets.notes!)).status).toBe(200);
     expect(((await (await admin.api("GET", "/v1/services")).json()) as any).held).toEqual([]);
+  });
+
+  test("a held copy that takes effect is audited and alerted, naming its redirect URIs, once per take-over", async () => {
+    const notes = SERVICES.services.find((s) => s.name === "notes")!;
+    expect((await register(notes)).status).toBe(201);
+    const dropped = testCopy(t, {}, { services: SERVICES.services.filter((s) => s.name !== "notes") });
+    // Still held where the file declares notes.
+    expect(await noteHeld(t.app)).toEqual([]);
+    expect(await noteHeld(dropped.app)).toEqual(["notes"]);
+    expect(dropped.alerts).toEqual([
+      "auth: the held copy of the service notes took effect, the services file no longer declaring it; redirect URIs: https://notes.example.com/auth/callback",
+    ]);
+    const [row] = await db.sql`SELECT actor, detail FROM audit WHERE action = 'service.held_copy_in_effect' ORDER BY id DESC LIMIT 1`;
+    expect(row).toEqual({ actor: null, detail: { service: "notes", redirect_uris: ["https://notes.example.com/auth/callback"] } });
+    // A second copy starting the same way reports nothing more.
+    expect(await noteHeld(testCopy(t, {}, { services: SERVICES.services.filter((s) => s.name !== "notes") }).app)).toEqual([]);
+    // Pinned in the file again, then dropped again: reported again.
+    expect(await noteHeld(t.app)).toEqual([]);
+    expect(await noteHeld(dropped.app)).toEqual(["notes"]);
+    expect((await admin.api("DELETE", "/v1/services/notes")).status).toBe(204);
+  });
+
+  test("removing a redirect URI drops the codes issued for it", async () => {
+    const two = { id: "kiln", type: "confidential", redirect_uris: ["https://kiln.example.com/a", "https://kiln.example.com/b"] };
+    await register(definition("kiln", { clients: [two] }));
+    const secret = await newSecret("kiln");
+    const { b } = await signIn(t, "sara", { kiln: "member" });
+    const kept = await codeFor(b, "kiln", "https://kiln.example.com/a");
+    const gone = await codeFor(b, "kiln", "https://kiln.example.com/b");
+    expect((await admin.api("PUT", "/v1/services/kiln", definition("kiln", { clients: [{ ...two, redirect_uris: ["https://kiln.example.com/a"] }] }))).status).toBe(200);
+    expect(await db.sql`SELECT 1 FROM auth_codes WHERE code_hash = ${sha256(gone)}`).toHaveLength(0);
+    expect(((await (await exchange(t, "kiln", secret, gone, "https://kiln.example.com/b")).json()) as any).error).toBe("invalid_grant");
+    expect((await exchange(t, "kiln", secret, kept, "https://kiln.example.com/a")).status).toBe(200);
+  });
+
+  test("a code is redeemed only for a redirect URI its client still registers, the services file's too", async () => {
+    const { b } = await signIn(t, "tomas", { wiki: "member" });
+    const code = await codeFor(b, "wiki", "https://wiki.example.com/auth/callback");
+    // A copy started with a services file that moved wiki's redirect URI.
+    const moved = testCopy(t, {}, {
+      services: SERVICES.services.map((s) =>
+        s.name === "wiki" ? { ...s, clients: [{ ...s.clients[0]!, redirect_uris: ["https://wiki.example.com/new/callback"] }] } : s,
+      ),
+    });
+    const res = await exchange(moved, "wiki", t.secrets.wiki!, code, "https://wiki.example.com/auth/callback");
+    expect(((await res.json()) as any).error).toBe("invalid_grant");
   });
 
   test("a registered service whose client id the file gives another service is held, and logged", async () => {
