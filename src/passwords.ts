@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 // Account passwords (docs/DESIGN.md §9.1).
 
 // OWASP's minimum for argon2id: m = 19 MiB, t = 2, p = 1. Bun's default is
-// 64 MiB, and two of those at once would put a 128 MB container at its limit.
+// 64 MiB, a 64 MB container's whole limit.
 export const ARGON2 = { algorithm: "argon2id", memoryCost: 19456, timeCost: 2 } as const;
 const CURRENT_PREFIX = "$argon2id$v=19$m=19456,t=2,p=1$";
 
@@ -30,8 +30,9 @@ export class Semaphore {
 }
 
 export class Hasher {
-  // Two hashes at a time cap hashing memory at 38 MiB.
-  readonly #slots = new Semaphore(2);
+  // One hash at a time caps hashing memory at 19 MiB. On half a CPU a second
+  // slot adds no throughput, since both hashes would share the same half core.
+  readonly #slots = new Semaphore(1);
   #dummy: Promise<string> | null = null;
 
   hash(password: string): Promise<string> {
