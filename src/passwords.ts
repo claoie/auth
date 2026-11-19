@@ -29,14 +29,21 @@ export class Semaphore {
   }
 }
 
+type PasswordHashing = Pick<typeof Bun.password, "hash" | "verify">;
+
 export class Hasher {
   // One hash at a time caps hashing memory at 19 MiB. On half a CPU a second
   // slot adds no throughput, since both hashes would share the same half core.
   readonly #slots = new Semaphore(1);
+  readonly #hashing: PasswordHashing;
   #dummy: Promise<string> | null = null;
 
+  constructor(hashing: PasswordHashing = Bun.password) {
+    this.#hashing = hashing;
+  }
+
   hash(password: string): Promise<string> {
-    return this.#slots.run(() => Bun.password.hash(password, ARGON2));
+    return this.#slots.run(() => this.#hashing.hash(password, ARGON2));
   }
 
   // `stored` null (an unknown user, or one without a password) verifies
@@ -50,7 +57,7 @@ export class Hasher {
     const input = target.startsWith("$2") ? Buffer.from(password, "utf8").subarray(0, 72) : password;
     let ok = false;
     try {
-      ok = await this.#slots.run(() => Bun.password.verify(input, target));
+      ok = await this.#slots.run(() => this.#hashing.verify(input, target));
     } catch {
       ok = false;
     }
